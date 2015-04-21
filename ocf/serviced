@@ -1,0 +1,289 @@
+#! /bin/bash
+#
+# 
+#           Resource agent for managing serviced resources.
+# 
+# Modeled from https://github.com/madkiss/openstack-resource-agents
+#
+# Copyright 2015 The Serviced Authors.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# OCF instance parameters:
+# OCF_RESKEY_binary
+# OCF_RESKEY_config
+# OCF_RESKEY_pid
+# OCF_RESKEY_ipaddr
+##############################################################################
+# Initialization
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+##############################################################################
+
+# Fill in some defaults if no values are specified
+
+OCF_RESKEY_binary_default="serviced"
+OCF_RESKEY_config_default="/etc/default/serviced"
+OCF_RESKEY_pid_default="$HA_RSCTMP/$OCF_RESOURCE_INSTANCE.pid"
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+
+##############################################################################
+
+usage() {
+    cat <<UEND
+        usage: $0 (start|stop|validate-all|meta-data|status|monitor)
+
+        $0 manages Control Center Master Service (serviced) process as an HA resource.
+
+        The 'start' operation starts the serviced service.
+        The 'stop' operation stops the serviced service.
+        The 'validate-all' operation reports whether the parameters are valid.
+        The 'meta-data' operation reports this RA's meta-data information.
+        The 'status' operation reports whether the serviced service is running
+        The 'monitor' operation reports whether the serviced service seems to be working.
+UEND
+}
+
+meta_data() {
+    cat <<END
+<?xml version="1.0">
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="serviced">
+<version>1.0</version>
+
+<longdesc lang="en">
+Resource agent for the Control Center Master Service (serviced)
+May manage a serviced instance that manages a set of serviced agents on varying 
+hosts.
+</longdesc>
+<shortdesc lang="en">Manages the Control Center Master Service (serviced)</shortdesc>
+
+<parameters>
+
+<parameter name="binary" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center binary (serviced)
+</longdesc>
+<shortdesc lang="en">Control Center binary (serviced)</shortdesc>
+<content type="string" default="${OCF_RESKEY_binary_default}" />
+</parameter>
+
+<parameter name="config" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center (serviced) configuration file
+</longdesc>
+<shortdesc lang="en">Control Center (serviced) configuration file</shortdesc>
+<content type="string" default="${OCF_RESKEY_config_default}" />
+</parameter>
+
+<parameter name="pid" unique="0" required="0">
+<longdesc lang="en">
+The pid file to use for this Control Center (serviced) instance
+</longdesc>
+<shortdesc lang="en">Control Center (serviced) pid file</shortdesc>
+<content type="string" default="${OCF_RESKEY_pid_default}" />
+</parameter>
+
+<parameter name="ipaddr" unique="1" required="1">
+<longdesc lang="en">
+Highly available floating ip where serviced agents will be configured to 
+contact the master via the outbound ip.
+</longdesc>
+<shortdesc lang="en">Control Center serviced outbound ip</shortdesc>
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start" timeout="60" />
+<action name="stop" timeout="60" />
+<action name="status" timeout="20" />
+<action name="monitor" timeout="30" interval="20" />
+<action name="validate-all" timeout="5" />
+<action name="meta-data" timeout="5" />
+</actions>
+</resource-agent>
+END
+}
+
+##############################################################################
+# Functions invoked by resource manager actions
+
+serviced_validate() {
+    local rc
+    check_binary $OCF_RESKEY_binary
+    check_binary docker
+    check_binary ip
+
+    if [ ! -f $OCF_RESKEY_config ]; then 
+        ocf_log err "Config $OCF_RESKEY_config doesn't exist"
+        return $OCF_ERR_INSTALLED
+    fi
+
+    # check the ip
+    ip addr show | grep "$OCF_RESKEY_ipaddr/" > /dev/null
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        ocf_log err "IP Address $OCF_RESKEY_ipaddr not available on this host"
+        return $OCF_ERR_CONFIGURED
+    fi
+
+    return $OCF_SUCCESS
+}
+
+serviced_status() {
+    local pid
+    local rc
+
+    if [ ! -f $OCF_RESKEY_pid ]; then
+        ocf_log info "Control Center (serviced) is not running"
+        return $OCF_NOT_RUNNING
+    else
+        pid=`cat $OCF_RESKEY_pid`
+    fi
+
+    ocf_run -warn kill -s 0 $pid
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        return $OCF_SUCCESS
+    else
+        ocf_log info "Old PID file found, but Control Center (serviced) is not running"
+        return $OCF_NOT_RUNNING
+    fi
+}
+
+serviced_monitor() {
+    local rc
+
+    serviced_status
+    rc=$?
+
+    # If status returned anything but success, return that immediately
+    if [ $rc -ne $OCF_SUCCESS ]; then
+        return $rc
+    fi
+
+    # Check detailed information.
+    # return $OCF_NOT_RUNNING if the master is not operational
+
+    return $OCF_SUCCESS
+}
+
+serviced_start() {
+    local rc
+
+    serviced_monitor
+    rc=$?
+    if [ $rc -eq $OCF_SUCCESS ]; then
+        ocf_log info "Control Center (serviced) already running"
+        return $OCF_SUCCESS
+    fi
+
+    # run the actual serviced daemon
+    # TODO: add heartbeat for docker
+    su root -s /bin/sh -c "${OCF_RESKEY_binary} --config-file=${OCF_RESKEY_config} \
+        --outbound=${OCF_RESKEY_ipaddr}"' >> /var/log/serviced.log 2>&1 & echo $!' > $OCF_RESKEY_pid
+
+    # Spin waiting for the server to come up.
+    while true; do
+        serviced_monitor
+        rc=$?
+        if [ $rc -eq $OCF_NOT_RUNNING ]; then
+            ocf_log err "Control Center (serviced) start failed"
+            exit $OCF_ERR_GENERIC
+        fi
+        sleep 1
+    done
+
+    ocf_log info "Control Center (serviced) started"
+    return $OCF_SUCCESS
+}
+
+serviced_stop() {
+    local rc
+    local pid
+
+    serviced_status
+    rc=$?
+    if [ $rc -eq $OCF_NOT_RUNNING ]; then
+        ocf_log info "Control Center (serviced) already stopped"
+        return $OCF_SUCCESS
+    fi
+
+    # Try SIGTERM
+    pid=`cat $OCF_RESKEY_pid`
+    ocf_run kill -s TERM $pid
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        ocf_log err "Control Center (serviced) could not be stopped"
+        exit $OCF_ERR_GENERIC
+    fi
+
+    # stop waiting
+    shutdown_timeout=60
+    if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
+        shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
+    fi
+    count=0
+    while [ $count -lt $shutdown_timeout ]; do
+        serviced_status
+        rc=$?
+        if [ $rc -eq $OCF_NOT_RUNNING ]; then
+            break
+        fi
+        count=`expr $count + 1`
+        sleep 1
+        ocf_log debug "Control Center (serviced) still hasn't stopped yet. Waiting ..."
+    done
+
+    serviced_status
+    rc=$?
+    if [ $rc -ne $OCF_NOT_RUNNING ]; then
+        # SIGTERM didn't help, try SIGKILL
+        ocf_log info "Control Center (serviced) failed to stop after ${shutdown_timeout}s \
+            using SIGTERM.  Trying SIGKILL ..."
+        ocf_run kill -s KILL $pid
+    fi
+
+    ocf_log info "Control Center (serviced) stopped"
+    rm -f $OCF_RESKEY_pid
+
+    return $OCF_SUCCESS
+}
+
+##############################################################################
+
+case "$1" in
+meta-data)          meta_data
+                    exit $OCF_SUCCESS;;
+usage|help)         usage
+                    exit $OCF_SUCCESS;;
+esac
+
+# Anything except meta-data and help must pass validation
+serviced_validation || exit $?
+
+# What kind of method was invoked?
+case "$1" in
+start)              serviced_start;;
+stop)               serviced_stop;;
+status)             serviced_status;;
+monitor)            serviced_monitor;;
+validate-all)       ;;
+*)                  usage
+                    exit $OCF_ERR_UNIMPLEMENTED;;
+esac
