@@ -60,7 +60,7 @@ UEND
 
 meta_data() {
     cat <<END
-<?xml version="1.0">
+<?xml version="1.0" ?>
 <!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
 <resource-agent name="serviced">
 <version>1.0</version>
@@ -104,6 +104,7 @@ Highly available floating ip where serviced agents will be configured to
 contact the master via the outbound ip.
 </longdesc>
 <shortdesc lang="en">Control Center serviced outbound ip</shortdesc>
+<content type="string" />
 </parameter>
 
 </parameters>
@@ -177,7 +178,7 @@ serviced_monitor() {
         return $rc
     fi
 
-    # Check detailed information.
+    # TODO: Check detailed information.
     # return $OCF_NOT_RUNNING if the master is not operational
 
     return $OCF_SUCCESS
@@ -186,7 +187,7 @@ serviced_monitor() {
 serviced_start() {
     local rc
 
-    serviced_monitor
+    serviced_status
     rc=$?
     if [ $rc -eq $OCF_SUCCESS ]; then
         ocf_log info "Control Center (serviced) already running"
@@ -196,17 +197,20 @@ serviced_start() {
     # run the actual serviced daemon
     # TODO: add heartbeat for docker
     su root -s /bin/sh -c "${OCF_RESKEY_binary} --config-file=${OCF_RESKEY_config} \
-        --outbound=${OCF_RESKEY_ipaddr}"' >> /var/log/serviced.log 2>&1 & echo $!' > $OCF_RESKEY_pid
+        --outbound=${OCF_RESKEY_ipaddr} --master --agent"' >> /var/log/serviced.log 2>&1 & echo $!' \
+        > $OCF_RESKEY_pid
 
     # Spin waiting for the server to come up.
+    # Let the CRM/LRM time us out if required
     while true; do
+        sleep 1
         serviced_monitor
         rc=$?
+        [ $rc -eq $OCF_SUCCESS ] && break
         if [ $rc -eq $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) start failed"
             exit $OCF_ERR_GENERIC
         fi
-        sleep 1
     done
 
     ocf_log info "Control Center (serviced) started"
@@ -275,7 +279,7 @@ usage|help)         usage
 esac
 
 # Anything except meta-data and help must pass validation
-serviced_validation || exit $?
+serviced_validate || exit $?
 
 # What kind of method was invoked?
 case "$1" in

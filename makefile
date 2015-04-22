@@ -31,19 +31,24 @@ CATEGORY       = admin
 PKG_VERSION = $(VERSION)
 FULL_NAME   = $(NAME)
 
+TEST_CONFIG ?= /etc/default/serviced
+
 define DESCRIPTION
 Zenoss Serviced Resource Agents
 Allows serviced to run in Linux HA.
 endef
 export DESCRIPTION
 
-.PHONY: all clean deb rpm
+.PHONY: all clean deb rpm test
 .SILENT: usage
 
 all: usage
 
 usage:
 	echo "Usage: make deb or make rpm.  Both options package $(FULL_NAME)-$(PKG_VERSION)."
+
+test: 
+	sudo ocf-tester -n serviced -o config=$(TEST_CONFIG) -o ipaddr=172.17.42.1 -o binary=`which serviced` ocf/serviced
 
 .PHONY: clean_files
 clean_files:
