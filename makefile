@@ -15,6 +15,8 @@
 # RPM and DEB and TGZ builder for serviced-resource-agents
 #
 
+INSTALL = /usr/bin/install
+
 NAME          ?= serviced-resource-agents
 VERSION       ?= $(shell cat ./VERSION)
 MAINTAINER     = "Zenoss CM <cm@zenoss.com>"
@@ -93,7 +95,9 @@ $(PKGROOT):
 
 $(PKGROOT)/usr/lib/ocf/resource.d/zenoss: $(PKGROOT)
 	mkdir -p $@
-	cp ./ocf/* $(PKGROOT)/usr/lib/ocf/resource.d/zenoss
+	for file in ocf/*; do \
+		$(INSTALL) -t $@ -m 0755 $${file} ;\
+	done
 
 # Make a DEB
 deb: $(PKGROOT)/usr/lib/ocf/resource.d/zenoss
