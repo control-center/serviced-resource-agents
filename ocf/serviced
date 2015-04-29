@@ -23,6 +23,7 @@
 # OCF_RESKEY_config
 # OCF_RESKEY_pid
 # OCF_RESKEY_ipaddr
+# OCF_RESKEY_rpcport
 ##############################################################################
 # Initialization
 
@@ -36,10 +37,12 @@
 OCF_RESKEY_binary_default="serviced"
 OCF_RESKEY_config_default="/etc/default/serviced"
 OCF_RESKEY_pid_default="$HA_RSCTMP/$OCF_RESOURCE_INSTANCE.pid"
+OCF_RESKEY_rpcport_default="4979"
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_rpcport=${OCF_RESKEY_rpcport_default}}
 
 ##############################################################################
 
@@ -107,6 +110,14 @@ contact the master via the outbound ip.
 <content type="string" />
 </parameter>
 
+<parameter name="rpcport" unique="0" required="0">
+<longdesc lang="en">
+RPC port used to communicate with this instance of serviced.
+</longdesc>
+<shortdesc lang="en">Control Center serviced RPC port</shortdesc>
+<content type="integer" default="${OCF_RESKEY_rpcport_default}" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -135,12 +146,17 @@ serviced_validate() {
         return $OCF_ERR_INSTALLED
     fi
 
+    # Return if we are monitoring or checking the status
+    if [[ "$__OCF_ACTION" = "monitor" || "$__OCF_ACTION" = "status" ]]; then
+        return $OCF_SUCCESS
+    fi
+
     # check the ip
     ip addr show | grep "$OCF_RESKEY_ipaddr/" > /dev/null
     rc=$?
     if [ $rc -ne 0 ]; then
         ocf_log err "IP Address $OCF_RESKEY_ipaddr not available on this host"
-        return $OCF_ERR_CONFIGURED
+        return $OCF_ERR_INSTALLED
     fi
 
     return $OCF_SUCCESS
@@ -150,21 +166,17 @@ serviced_status() {
     local pid
     local rc
 
-    if [ ! -f $OCF_RESKEY_pid ]; then
+    ocf_pidfile_status $OCF_RESKEY_pid
+    rc=$?
+    if [ $rc -eq 2 ]; then
         ocf_log info "Control Center (serviced) is not running"
         return $OCF_NOT_RUNNING
-    else
-        pid=`cat $OCF_RESKEY_pid`
-    fi
-
-    ocf_run -warn kill -s 0 $pid
-    rc=$?
-    if [ $rc -eq 0 ]; then
-        return $OCF_SUCCESS
-    else
+    elif [ $rc -eq 1 ]; then
         ocf_log info "Old PID file found, but Control Center (serviced) is not running"
         return $OCF_NOT_RUNNING
     fi
+
+    return $OCF_SUCCESS
 }
 
 serviced_monitor() {
@@ -172,14 +184,17 @@ serviced_monitor() {
 
     serviced_status
     rc=$?
-
     # If status returned anything but success, return that immediately
     if [ $rc -ne $OCF_SUCCESS ]; then
         return $rc
     fi
 
-    # TODO: Check detailed information.
+    ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
+    rc=$?
     # return $OCF_NOT_RUNNING if the master is not operational
+    if [ $rc -ne 0 ]; then
+        return $OCF_NOT_RUNNING
+    fi
 
     return $OCF_SUCCESS
 }
@@ -196,21 +211,23 @@ serviced_start() {
 
     # run the actual serviced daemon
     # TODO: add heartbeat for docker
-    su root -s /bin/sh -c "${OCF_RESKEY_binary} --config-file=${OCF_RESKEY_config} \
-        --outbound=${OCF_RESKEY_ipaddr} --master --agent"' >> /var/log/serviced.log 2>&1 & echo $!' \
-        > $OCF_RESKEY_pid
+    ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
+        --outbound="${OCF_RESKEY_ipaddr}" \
+        --listen="${OCF_RESKEY_rpcport}" \
+        --master --agent >> /var/log/serviced.log 2>&1 &
+    echo $! > $OCF_RESKEY_pid
 
     # Spin waiting for the server to come up.
     # Let the CRM/LRM time us out if required
     while true; do
-        sleep 1
         serviced_monitor
         rc=$?
         [ $rc -eq $OCF_SUCCESS ] && break
-        if [ $rc -eq $OCF_NOT_RUNNING ]; then
+        if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) start failed"
-            exit $OCF_ERR_GENERIC
+            return $rc
         fi
+        sleep 1
     done
 
     ocf_log info "Control Center (serviced) started"
@@ -231,11 +248,6 @@ serviced_stop() {
     # Try SIGTERM
     pid=`cat $OCF_RESKEY_pid`
     ocf_run kill -s TERM $pid
-    rc=$?
-    if [ $rc -ne 0 ]; then
-        ocf_log err "Control Center (serviced) could not be stopped"
-        exit $OCF_ERR_GENERIC
-    fi
 
     # stop waiting
     shutdown_timeout=60
@@ -261,6 +273,12 @@ serviced_stop() {
         ocf_log info "Control Center (serviced) failed to stop after ${shutdown_timeout}s \
             using SIGTERM.  Trying SIGKILL ..."
         ocf_run kill -s KILL $pid
+        serviced_status
+        rc=$?
+        if [ $rc -ne $OCF_NOT_RUNNING ]; then
+            ocf_log err "Control Center (serviced) could not be stopped"
+            return $rc
+        fi
     fi
 
     ocf_log info "Control Center (serviced) stopped"
