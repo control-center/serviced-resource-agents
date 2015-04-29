@@ -135,6 +135,11 @@ serviced_validate() {
         return $OCF_ERR_INSTALLED
     fi
 
+    # Return if we are monitoring or checking the status
+    if [[ "$__OCF_ACTION" = "monitor" || "$__OCF_ACTION" = "status" ]]; then
+        return $OCF_SUCCESS
+    fi
+
     # check the ip
     ip addr show | grep "$OCF_RESKEY_ipaddr/" > /dev/null
     rc=$?
