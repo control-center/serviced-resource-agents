@@ -23,6 +23,7 @@
 # OCF_RESKEY_config
 # OCF_RESKEY_pid
 # OCF_RESKEY_ipaddr
+# OCF_RESKEY_rpcport
 ##############################################################################
 # Initialization
 
@@ -36,10 +37,12 @@
 OCF_RESKEY_binary_default="serviced"
 OCF_RESKEY_config_default="/etc/default/serviced"
 OCF_RESKEY_pid_default="$HA_RSCTMP/$OCF_RESOURCE_INSTANCE.pid"
+OCF_RESKEY_rpcport_default="4979"
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_rpcport=${OCF_RESKEY_rpcport}}
 
 ##############################################################################
 
@@ -173,14 +176,17 @@ serviced_monitor() {
 
     serviced_status
     rc=$?
-
     # If status returned anything but success, return that immediately
     if [ $rc -ne $OCF_SUCCESS ]; then
         return $rc
     fi
 
-    # TODO: Check detailed information.
+    ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
+    rc=$?
     # return $OCF_NOT_RUNNING if the master is not operational
+    if [ $rc -ne 0 ]; then
+        return $OCF_NOT_RUNNING
+    fi
 
     return $OCF_SUCCESS
 }
