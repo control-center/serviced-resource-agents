@@ -42,7 +42,7 @@ OCF_RESKEY_rpcport_default="4979"
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
-: ${OCF_RESKEY_rpcport=${OCF_RESKEY_rpcport}}
+: ${OCF_RESKEY_rpcport=${OCF_RESKEY_rpcport_default}}
 
 ##############################################################################
 
@@ -108,6 +108,14 @@ contact the master via the outbound ip.
 </longdesc>
 <shortdesc lang="en">Control Center serviced outbound ip</shortdesc>
 <content type="string" />
+</parameter>
+
+<parameter name="rpcport" unique="0" required="0">
+<longdesc lang="en">
+RPC port used to communicate with this instance of serviced.
+</longdesc>
+<shortdesc lang="en">Control Center serviced RPC port</shortdesc>
+<content type="integer" default="${OCF_RESKEY_rpcport_default}" />
 </parameter>
 
 </parameters>
@@ -203,7 +211,10 @@ serviced_start() {
 
     # run the actual serviced daemon
     # TODO: add heartbeat for docker
-    ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" --outbound="${OCF_RESKEY_ipaddr}" --master --agent >> /var/log/serviced.log 2>&1 &
+    ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
+        --outbound="${OCF_RESKEY_ipaddr}" \
+        --listen="${OCF_RESKEY_rpcport}" \
+        --master --agent >> /var/log/serviced.log 2>&1 &
     echo $! > $OCF_RESKEY_pid
 
     # Spin waiting for the server to come up.
