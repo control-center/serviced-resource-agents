@@ -139,23 +139,9 @@ serviced_validate() {
     local rc
     check_binary $OCF_RESKEY_binary
     check_binary docker
-    check_binary ip
 
     if [ ! -f $OCF_RESKEY_config ]; then 
         ocf_log err "Config $OCF_RESKEY_config doesn't exist"
-        return $OCF_ERR_INSTALLED
-    fi
-
-    # Return if we are monitoring or checking the status
-    if [[ "$__OCF_ACTION" = "monitor" || "$__OCF_ACTION" = "status" ]]; then
-        return $OCF_SUCCESS
-    fi
-
-    # check the ip
-    ip addr show | grep "$OCF_RESKEY_ipaddr/" > /dev/null
-    rc=$?
-    if [ $rc -ne 0 ]; then
-        ocf_log err "IP Address $OCF_RESKEY_ipaddr not available on this host"
         return $OCF_ERR_INSTALLED
     fi
 
@@ -182,19 +168,24 @@ serviced_status() {
 serviced_monitor() {
     local rc
 
+    # If status returned anything but success, return that immediately
     serviced_status
     rc=$?
-    # If status returned anything but success, return that immediately
     if [ $rc -ne $OCF_SUCCESS ]; then
         return $rc
     fi
 
-    ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
-    rc=$?
-    # return $OCF_NOT_RUNNING if the master is not operational
-    if [ $rc -ne 0 ]; then
-        return $OCF_NOT_RUNNING
-    fi
+    # Spin waiting for a valid healthcheck response
+    while true; do
+        ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
+        rc=$?
+        [ $rc -eq 0 ] && break
+        if [ $rc -ne 2 ]; then
+            ocf_log err "Control Center (serviced) failed healthchecks"
+            return $OCF_NOT_RUNNING
+        fi
+        sleep 1
+    done
 
     return $OCF_SUCCESS
 }
@@ -210,7 +201,6 @@ serviced_start() {
     fi
 
     # run the actual serviced daemon
-    # TODO: add heartbeat for docker
     ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
         --outbound="${OCF_RESKEY_ipaddr}" \
         --listen="${OCF_RESKEY_rpcport}" \
@@ -220,6 +210,12 @@ serviced_start() {
     # Spin waiting for the server to come up.
     # Let the CRM/LRM time us out if required
     while true; do
+        # if the server is not running, then exit immediately
+        serviced_status
+        rc=$?
+        [ $rc -ne $OCF_SUCCESS ] && exit $OCF_ERR_GENERIC
+
+        # wait for the monitor to be successful
         serviced_monitor
         rc=$?
         [ $rc -eq $OCF_SUCCESS ] && break

@@ -44,7 +44,11 @@ export DESCRIPTION
 .PHONY: all clean deb rpm test
 .SILENT: usage
 
-all: usage
+all:
+	docker build -t zenoss/serviced-resource-agents:rpm-$(PKG_VERSION) ./pkg/rpm
+	docker run --rm -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:rpm-$(PKG_VERSION)
+	docker build -t zenoss/serviced-resource-agents:deb-$(PKG_VERSION) ./pkg/deb
+	docker run --rm -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:deb-$(PKG_VERSION)
 
 usage:
 	echo "Usage: make deb or make rpm.  Both options package $(FULL_NAME)-$(PKG_VERSION)."
