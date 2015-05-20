@@ -132,6 +132,24 @@ RPC port used to communicate with this instance of serviced.
 END
 }
 
+
+##############################################################################
+#
+# Internal method to shutdown NFS.
+#
+# serviced is responsible for starting NFS, adding entries to /etc/exports,
+# and exporting /opt/serviced/var/volumes. When a failover occurs, we need to
+# make sure that NFS is stopped and /opt/serviced/var/volumes is no longer
+# exported.
+#
+nfs_shutdown() {
+    ocf_log info "Stopping NFS"
+    systemctl stop nfs
+
+    ocf_log info "Unmounting /exports/serviced_var_volumes"
+    umount -f /exports/serviced_var_volumes
+}
+
 ##############################################################################
 # Functions invoked by resource manager actions
 
@@ -201,7 +219,8 @@ serviced_start() {
     fi
 
     # run the actual serviced daemon
-    ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
+    SERVICED_HOME=/opt/serviced TZ=UTC HOME=/root GOMAXPROCS=2 \
+        ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
         --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" \
         --outbound="${OCF_RESKEY_ipaddr}" \
         --listen="${OCF_RESKEY_rpcport}" \
@@ -280,6 +299,8 @@ serviced_stop() {
 
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
+
+    nfs_shutdown
 
     return $OCF_SUCCESS
 }
