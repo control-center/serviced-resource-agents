@@ -218,14 +218,9 @@ serviced_start() {
         return $OCF_SUCCESS
     fi
 
-    # run the actual serviced daemon
-    SERVICED_HOME=/opt/serviced TZ=UTC HOME=/root GOMAXPROCS=2 \
-        ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
-        --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" \
-        --outbound="${OCF_RESKEY_ipaddr}" \
-        --listen="${OCF_RESKEY_rpcport}" \
-        --master --agent >> /var/log/serviced.log 2>&1 &
-    echo $! > $OCF_RESKEY_pid
+    # Start serviced and record the PID
+    ocf_run -q systemctl start serviced
+    systemctl status serviced | grep "Main PID:" | awk '{print $3}' > $OCF_RESKEY_pid
 
     # Spin waiting for the server to come up.
     # Let the CRM/LRM time us out if required
@@ -261,15 +256,16 @@ serviced_stop() {
         return $OCF_SUCCESS
     fi
 
-    # Try SIGTERM
-    pid=`cat $OCF_RESKEY_pid`
-    ocf_run kill -s TERM $pid
+    # Try a normal shutdown.
+    # Execute in the background so that we can use our own shutdown_timeout
+    systemctl stop serviced &
 
     # stop waiting
     shutdown_timeout=60
     if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
         shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
     fi
+
     count=0
     while [ $count -lt $shutdown_timeout ]; do
         serviced_status
@@ -288,6 +284,8 @@ serviced_stop() {
         # SIGTERM didn't help, try SIGKILL
         ocf_log info "Control Center (serviced) failed to stop after ${shutdown_timeout}s \
             using SIGTERM.  Trying SIGKILL ..."
+
+        pid=`cat $OCF_RESKEY_pid`
         ocf_run kill -s KILL $pid
         serviced_status
         rc=$?
