@@ -22,8 +22,6 @@
 # OCF_RESKEY_binary
 # OCF_RESKEY_config
 # OCF_RESKEY_pid
-# OCF_RESKEY_ipaddr
-# OCF_RESKEY_rpcport
 ##############################################################################
 # Initialization
 
@@ -99,23 +97,6 @@ The pid file to use for this Control Center (serviced) instance
 </longdesc>
 <shortdesc lang="en">Control Center (serviced) pid file</shortdesc>
 <content type="string" default="${OCF_RESKEY_pid_default}" />
-</parameter>
-
-<parameter name="ipaddr" unique="1" required="1">
-<longdesc lang="en">
-Highly available floating ip where serviced agents will be configured to
-contact the master via the outbound ip.
-</longdesc>
-<shortdesc lang="en">Control Center serviced outbound ip</shortdesc>
-<content type="string" />
-</parameter>
-
-<parameter name="rpcport" unique="0" required="0">
-<longdesc lang="en">
-RPC port used to communicate with this instance of serviced.
-</longdesc>
-<shortdesc lang="en">Control Center serviced RPC port</shortdesc>
-<content type="integer" default="${OCF_RESKEY_rpcport_default}" />
 </parameter>
 
 </parameters>
@@ -195,7 +176,7 @@ serviced_monitor() {
 
     # Spin waiting for a valid healthcheck response
     while true; do
-        ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
+        ocf_run -info ${OCF_RESKEY_binary} healthcheck
         rc=$?
         [ $rc -eq 0 ] && break
         if [ $rc -ne 2 ]; then
