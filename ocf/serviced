@@ -116,16 +116,15 @@ END
 
 ##############################################################################
 #
-# Internal method to shutdown NFS.
+# Internal method to release NFS mounts used by serviced.
 #
 # serviced is responsible for starting NFS, adding entries to /etc/exports,
 # and exporting /opt/serviced/var/volumes. When a failover occurs, we need to
-# make sure that NFS is stopped and /opt/serviced/var/volumes is no longer
-# exported.
+# make sure that /opt/serviced/var/volumes is no longer exported and mounted.
 #
-nfs_shutdown() {
-    ocf_log info "Stopping NFS"
-    systemctl stop nfs
+nfs_umount() {
+    ocf_log info "Unexporting all NFS volumes"
+    exportfs -ua
 
     ocf_log info "Unmounting /exports/serviced_var_volumes"
     umount -f /exports/serviced_var_volumes
@@ -268,10 +267,14 @@ serviced_stop() {
 
         pid=`cat $OCF_RESKEY_pid`
         ocf_run kill -s KILL $pid
+
+        # wait a moment for the process to fully die
+        sleep 2
         serviced_status
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) could not be stopped"
+            nfs_umount
             return $rc
         fi
     fi
@@ -279,7 +282,7 @@ serviced_stop() {
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
 
-    nfs_shutdown
+    nfs_umount
 
     return $OCF_SUCCESS
 }
