@@ -103,9 +103,9 @@ The pid file to use for this Control Center (serviced) instance
 
 <actions>
 <action name="start" timeout="60" />
-<action name="stop" timeout="60" />
+<action name="stop" timeout="90" />
 <action name="status" timeout="20" />
-<action name="monitor" timeout="30" interval="20" />
+<action name="monitor" timeout="30" interval="30" />
 <action name="validate-all" timeout="5" />
 <action name="meta-data" timeout="5" />
 </actions>
