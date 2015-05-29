@@ -243,7 +243,7 @@ serviced_stop() {
     # stop waiting
     shutdown_timeout=60
     if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
-        shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
+        shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-7))
     fi
 
     count=0
