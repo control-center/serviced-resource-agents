@@ -1,17 +1,17 @@
 #! /bin/bash
 #
-# 
+#
 #           Resource agent for managing serviced resources.
-# 
+#
 # Modeled from https://github.com/madkiss/openstack-resource-agents
 #
 # Copyright 2015 The Serviced Authors.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,8 +22,6 @@
 # OCF_RESKEY_binary
 # OCF_RESKEY_config
 # OCF_RESKEY_pid
-# OCF_RESKEY_ipaddr
-# OCF_RESKEY_rpcport
 ##############################################################################
 # Initialization
 
@@ -70,7 +68,7 @@ meta_data() {
 
 <longdesc lang="en">
 Resource agent for the Control Center Master Service (serviced)
-May manage a serviced instance that manages a set of serviced agents on varying 
+May manage a serviced instance that manages a set of serviced agents on varying
 hosts.
 </longdesc>
 <shortdesc lang="en">Manages the Control Center Master Service (serviced)</shortdesc>
@@ -101,35 +99,35 @@ The pid file to use for this Control Center (serviced) instance
 <content type="string" default="${OCF_RESKEY_pid_default}" />
 </parameter>
 
-<parameter name="ipaddr" unique="1" required="1">
-<longdesc lang="en">
-Highly available floating ip where serviced agents will be configured to 
-contact the master via the outbound ip.
-</longdesc>
-<shortdesc lang="en">Control Center serviced outbound ip</shortdesc>
-<content type="string" />
-</parameter>
-
-<parameter name="rpcport" unique="0" required="0">
-<longdesc lang="en">
-RPC port used to communicate with this instance of serviced.
-</longdesc>
-<shortdesc lang="en">Control Center serviced RPC port</shortdesc>
-<content type="integer" default="${OCF_RESKEY_rpcport_default}" />
-</parameter>
-
 </parameters>
 
 <actions>
 <action name="start" timeout="60" />
-<action name="stop" timeout="60" />
+<action name="stop" timeout="90" />
 <action name="status" timeout="20" />
-<action name="monitor" timeout="30" interval="20" />
+<action name="monitor" timeout="30" interval="30" />
 <action name="validate-all" timeout="5" />
 <action name="meta-data" timeout="5" />
 </actions>
 </resource-agent>
 END
+}
+
+
+##############################################################################
+#
+# Internal method to release NFS mounts used by serviced.
+#
+# serviced is responsible for starting NFS, adding entries to /etc/exports,
+# and exporting /opt/serviced/var/volumes. When a failover occurs, we need to
+# make sure that /opt/serviced/var/volumes is no longer exported and mounted.
+#
+nfs_umount() {
+    ocf_log info "Unexporting all NFS volumes"
+    exportfs -ua
+
+    ocf_log info "Unmounting /exports/serviced_var_volumes"
+    umount -f /exports/serviced_var_volumes
 }
 
 ##############################################################################
@@ -140,7 +138,7 @@ serviced_validate() {
     check_binary $OCF_RESKEY_binary
     check_binary docker
 
-    if [ ! -f $OCF_RESKEY_config ]; then 
+    if [ ! -f $OCF_RESKEY_config ]; then
         ocf_log err "Config $OCF_RESKEY_config doesn't exist"
         return $OCF_ERR_INSTALLED
     fi
@@ -177,7 +175,7 @@ serviced_monitor() {
 
     # Spin waiting for a valid healthcheck response
     while true; do
-        ocf_run -info ${OCF_RESKEY_binary} --endpoint="${OCF_RESKEY_ipaddr}:${OCF_RESKEY_rpcport}" healthcheck
+        ocf_run -info ${OCF_RESKEY_binary} healthcheck
         rc=$?
         [ $rc -eq 0 ] && break
         if [ $rc -ne 2 ]; then
@@ -200,12 +198,9 @@ serviced_start() {
         return $OCF_SUCCESS
     fi
 
-    # run the actual serviced daemon
-    ${OCF_RESKEY_binary} --config-file="${OCF_RESKEY_config}" \
-        --outbound="${OCF_RESKEY_ipaddr}" \
-        --listen="${OCF_RESKEY_rpcport}" \
-        --master --agent >> /var/log/serviced.log 2>&1 &
-    echo $! > $OCF_RESKEY_pid
+    # Start serviced and record the PID
+    ocf_run -q systemctl start serviced
+    systemctl status serviced | grep "Main PID:" | awk '{print $3}' > $OCF_RESKEY_pid
 
     # Spin waiting for the server to come up.
     # Let the CRM/LRM time us out if required
@@ -241,15 +236,16 @@ serviced_stop() {
         return $OCF_SUCCESS
     fi
 
-    # Try SIGTERM
-    pid=`cat $OCF_RESKEY_pid`
-    ocf_run kill -s TERM $pid
+    # Try a normal shutdown.
+    # Execute in the background so that we can use our own shutdown_timeout
+    systemctl stop serviced &
 
     # stop waiting
     shutdown_timeout=60
     if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
-        shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
+        shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-7))
     fi
+
     count=0
     while [ $count -lt $shutdown_timeout ]; do
         serviced_status
@@ -268,17 +264,25 @@ serviced_stop() {
         # SIGTERM didn't help, try SIGKILL
         ocf_log info "Control Center (serviced) failed to stop after ${shutdown_timeout}s \
             using SIGTERM.  Trying SIGKILL ..."
+
+        pid=`cat $OCF_RESKEY_pid`
         ocf_run kill -s KILL $pid
+
+        # wait a moment for the process to fully die
+        sleep 2
         serviced_status
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) could not be stopped"
+            nfs_umount
             return $rc
         fi
     fi
 
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
+
+    nfs_umount
 
     return $OCF_SUCCESS
 }
