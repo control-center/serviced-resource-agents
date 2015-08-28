@@ -127,7 +127,7 @@ nfs_umount() {
     exportfs -ua
 
     ocf_log info "Unmounting /exports/serviced_var_volumes"
-    umount -f /exports/serviced_var_volumes
+    umount -f -l /exports/serviced_var_volumes
 }
 
 ##############################################################################
