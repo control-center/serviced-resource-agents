@@ -102,7 +102,7 @@ The pid file to use for this Control Center (serviced) instance
 </parameters>
 
 <actions>
-<action name="start" timeout="60" />
+<action name="start" timeout="360" />
 <action name="stop" timeout="90" />
 <action name="status" timeout="20" />
 <action name="monitor" timeout="30" interval="30" />
