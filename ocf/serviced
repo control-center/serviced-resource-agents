@@ -124,10 +124,18 @@ END
 #
 nfs_umount() {
     ocf_log info "Unexporting all NFS volumes"
-    exportfs -ua
+    ocf_run -warn exportfs -ua
 
     ocf_log info "Unmounting /exports/serviced_var_volumes"
-    umount -f -l /exports/serviced_var_volumes
+    ocf_run -warn umount -f -l /exports/serviced_var_volumes
+}
+
+##############################################################################
+#
+# Internal method to handle all cleanup actions after serviced is stopped
+#
+cleanup() {
+    nfs_umount
 }
 
 ##############################################################################
@@ -274,7 +282,7 @@ serviced_stop() {
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) could not be stopped"
-            nfs_umount
+            cleanup
             return $rc
         fi
     fi
@@ -282,8 +290,7 @@ serviced_stop() {
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
 
-    nfs_umount
-
+    cleanup
     return $OCF_SUCCESS
 }
 
