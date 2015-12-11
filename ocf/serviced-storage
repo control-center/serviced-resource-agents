@@ -1,0 +1,199 @@
+#!/bin/bash
+#
+#
+#           Resource agent for managing serviced storage.
+#
+# Modeled from https://github.com/madkiss/openstack-resource-agents
+#
+# This resource agent is responsible for stopping serviced storage. Unlike
+# a normal resource agent, this script does not actually start a process or
+# monitor a running service. Its only real function is to remove the serviced
+# devicemapper device(s) on 'stop'.  In the relative order of resource
+# agents, this resource agent should be placed BEFORE the NFS and serviced
+# resource agents so that no remote NFS client mounts can prevent the
+# devicemapper device from being removed.
+#
+# Background:
+#
+# If the serviced devicemapper device is not unmounted and deactivated, then
+# the LVM resource agent will not be able to stop the logical volume group
+# for the devicemapper thinpool and HA failover will stop with an error.
+# This situation can occur in a couple of different ways. For instance, if
+# serviced shutdown never completes (e.g. serviced crashes or receives a
+# SIGKILL), then the device will not be unmounted and deactivated by serviced.
+# Even when serviced shuts down normally, if a remote client has the tenant
+# directory mounted, then the devicemapper device will be unmounted by
+# serviced, but not deactivated ('Device is busy') - which also prevents the
+# LVM from being stopped (again becuase of 'Device is busy' errors).
+#
+# Copyright 2015 The Serviced Authors.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# OCF instance parameters:
+# OCF_RESKEY_config
+##############################################################################
+# Initialization
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+##############################################################################
+
+# Fill in some defaults if no values are specified
+
+OCF_RESKEY_config_default="/etc/default/serviced"
+
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+
+##############################################################################
+
+usage() {
+    cat <<UEND
+        usage: $0 (start|stop|validate-all|meta-data|status|monitor)
+
+        $0 manages Control Center Master Service (serviced) storage as an HA resource.
+
+        The 'start' operation starts the serviced storage service.
+        The 'stop' operation stops the serviced storage service.
+        The 'validate-all' operation reports whether the parameters are valid.
+        The 'meta-data' operation reports this RA's meta-data information.
+        The 'status' operation reports whether the serviced storage service is running
+        The 'monitor' operation reports whether the serviced storage service seems to be working.
+UEND
+}
+
+meta_data() {
+    cat <<END
+<?xml version="1.0" ?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="serviced-storage">
+<version>1.0</version>
+
+<longdesc lang="en">
+Resource agent for the Control Center Master Service storage (serviced-storage).
+Primarily responsibly for umounting devicemapper-based storage managed by serviced.
+</longdesc>
+<shortdesc lang="en">Manages the Control Center Master Service storage (serviced-storage).</shortdesc>
+
+<parameters>
+
+<parameter name="config" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center (serviced) configuration file
+</longdesc>
+<shortdesc lang="en">Control Center (serviced) configuration file</shortdesc>
+<content type="string" default="${OCF_RESKEY_config_default}" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start" timeout="10" />
+<action name="stop" timeout="60" />
+<action name="status" timeout="10" />
+<action name="monitor" timeout="10" interval="0" />
+<action name="validate-all" timeout="10" />
+<action name="meta-data" timeout="10" />
+</actions>
+</resource-agent>
+END
+}
+
+devicemapper_cleanup() {
+    if [ ! -d /opt/serviced/var/volumes ]; then
+        return
+    elif [ ! which dmsetup > /dev/null 2>&1 ]; then
+        return
+    fi
+
+    ocf_log info "Beginning devicemapper cleanup"
+    VOLUME_METAS=`find /opt/serviced/var/volumes -name metadata.json`
+    for metadata in $VOLUME_METAS; do
+        currentDevice=`grep -s CurrentDevice $metadata `
+        if [ $? -eq 0 ]; then
+            # get the value of the CurrentDevice property
+            deviceID=`echo ${currentDevice} | cut -d, -f1 | cut -d: -f2 | tr -d '"' `
+            ocf_log debug "for $metadata, deviceID=$deviceID"
+
+            # see if there is an active device whose name contains the deviceID (e.g. docker-nnn:n-nnn-<deviceID>)
+            dmDeviceName=`dmsetup ls | grep -s ${deviceID} `
+            if [ $? -eq 0 ]; then
+                # trim the "(<major>,<minor>)" suffix provided by the dmsetup-ls output
+                dmDeviceName=`echo ${dmDeviceName} | cut -d' ' -f1 `
+                ocf_log info "Removing devicemapper device named '${dmDeviceName}' ..."
+                ocf_run -q -warn dmsetup --force remove $dmDeviceName
+            else
+                ocf_log info "No devicemapper deviceID '${deviceID}' active"
+            fi
+        else
+            ocf_log warn "The file ${metadata} does not contain a 'CurrentDevice' property"
+        fi
+    done
+    ocf_log info "Finished devicemapper cleanup"
+}
+
+
+##############################################################################
+# Functions invoked by resource manager actions. With the exception of the
+# stop action, all of these functions are a no-op since this resource agent
+# does not manage an actual process or service.
+
+serviced_storage_validate() {
+    ocf_log info "serviced_storage_validate"
+    return $OCF_SUCCESS
+}
+
+serviced_storage_status() {
+    ocf_log info "serviced_storage_status"
+    return $OCF_SUCCESS
+}
+
+# This should never be called because monitor interval=0, but include it for completeness
+serviced_storage_monitor() {
+    ocf_log info "serviced_storage_monitor: instance=${OCF_RESOURCE_INSTANCE}"
+}
+
+# serviced manages its own storage, so there's really nothing to start
+serviced_storage_start() {
+    ocf_log info "serviced_storage_start"
+    return $OCF_SUCCESS
+}
+
+serviced_storage_stop() {
+    ocf_log info "serviced_storage_stop"
+    devicemapper_cleanup
+    return $OCF_SUCCESS
+}
+
+##############################################################################
+
+case "$1" in
+meta-data)          meta_data
+                    exit $OCF_SUCCESS;;
+usage|help)         usage
+                    exit $OCF_SUCCESS;;
+esac
+
+# Anything except meta-data and help must pass validation
+serviced_storage_validate || exit $?
+
+# What kind of method was invoked?
+case "$1" in
+start)              serviced_storage_start;;
+stop)               serviced_storage_stop;;
+status)             serviced_storage_status;;
+monitor)            serviced_storage_monitor;;
+validate-all)       ;;
+*)                  usage
+                    exit $OCF_ERR_UNIMPLEMENTED;;
+esac
