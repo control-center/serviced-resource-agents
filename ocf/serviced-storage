@@ -9,9 +9,20 @@
 # a normal resource agent, this script does not actually start a process or
 # monitor a running service. Its only real function is to remove the serviced
 # devicemapper device(s) on 'stop'.  In the relative order of resource
-# agents, this resource agent should be placed BEFORE the NFS and serviced
+# agents, this resource agent must be placed BEFORE the NFS and serviced
 # resource agents so that no remote NFS client mounts can prevent the
 # devicemapper device from being removed.
+#
+# Additionally, there is a potential problem on startup w.r.t. NFS exports.
+# If /etc/exports contains an entry to export a serviced tenant directory,
+# then the NFS server will export that directory when it starts, even if
+# serviced has not yet bind mounted that directory to the corresponding
+# directory in /opt/serviced/var/volumes. This can lead to stale NFS file
+# handles on the agent nodes.  To avoid this problem, the 'start' action
+# of this resource agent will remove entries from /etc/exports for any
+# tenant applications. Since this reource agent should be run before the
+# NFS agent, this ensures that NFS does not export the mount point before
+# serviced has bind mounted it to /opt/serviced/var/volumes/<tenantID>.
 #
 # Background:
 #
@@ -109,6 +120,33 @@ Location of the Control Center (serviced) configuration file
 END
 }
 
+##############################################################################
+# Make sure that all tenant directories are unmounted
+unmount_all_tenant_volumes() {
+    ocf_log info "Beginning unmounting all serviced tenant volumes"
+
+    # Unmount exported volumes first
+    TENANT_MOUNTS=`grep /exports/serviced_var_volumes /proc/mounts | cut -d' ' -f2`
+    for volume in $TENANT_MOUNTS; do
+        ocf_log info "Unmounting $volume"
+        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
+    done
+
+    # For scenarios where serviced failed to shtudown completely, there may be
+    # dangling devicemapper mounts as well. These need to be unmounted so that
+    # the devicemapper devices can be completed deactivated.
+    TENANT_MOUNTS=`grep /opt/serviced/var/volumes/[a-zA-Z0-9]* /proc/mounts | cut -d' ' -f2`
+    for volume in $TENANT_MOUNTS; do
+        ocf_log info "Unmounting $volume"
+        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
+    done
+    ocf_log info "Finished unmounting all serviced tenant volumes"
+}
+
+##############################################################################
+# Make sure that all devicemapper devices created by serviced are deactivated.
+# Note: This function will only work after both serviced and NFS have been
+# stopped, and all of the serviced devicemapper devices have been unmounted.
 devicemapper_cleanup() {
     if [ ! -d /opt/serviced/var/volumes ]; then
         return
@@ -131,7 +169,7 @@ devicemapper_cleanup() {
                 # trim the "(<major>,<minor>)" suffix provided by the dmsetup-ls output
                 dmDeviceName=`echo ${dmDeviceName} | cut -d' ' -f1 `
                 ocf_log info "Removing devicemapper device named '${dmDeviceName}' ..."
-                ocf_run -q -warn dmsetup --force remove $dmDeviceName
+                ocf_run dmsetup --force remove $dmDeviceName || exit $OCF_ERR_GENERIC
             else
                 ocf_log info "No devicemapper deviceID '${deviceID}' active"
             fi
@@ -142,6 +180,20 @@ devicemapper_cleanup() {
     ocf_log info "Finished devicemapper cleanup"
 }
 
+##############################################################################
+# Cleanup /etc/exports by removing any entries for all serviced tenant apps
+# (see the comments at the top of this file).
+exports_cleanup() {
+    ocf_log info "Beginning exports cleanup"
+
+    if [ ! -f /etc/exports ]; then
+        ocf_log warn "No /etc/exports file found"
+        return
+    fi
+
+    ocf_run -q -warn sed -i '/^\/exports\/serviced_var_volumes/d' /etc/exports
+    ocf_log info "Finished exports cleanup"
+}
 
 ##############################################################################
 # Functions invoked by resource manager actions. With the exception of the
@@ -163,15 +215,22 @@ serviced_storage_monitor() {
     ocf_log info "serviced_storage_monitor: instance=${OCF_RESOURCE_INSTANCE}"
 }
 
-# serviced manages its own storage, so there's really nothing to start
+# serviced manages its own storage, so there's really nothing to start but we
+# need to make sure that NFS exports are cleaned up to avoid letting the NFS
+# server export a directory before serviced has mounted the underlying
+# /opt/serviced/var/volumes/<tenantID> directory (see comments at the top of
+# this file).
 serviced_storage_start() {
     ocf_log info "serviced_storage_start"
+    exports_cleanup
     return $OCF_SUCCESS
 }
 
 serviced_storage_stop() {
     ocf_log info "serviced_storage_stop"
+    unmount_all_tenant_volumes
     devicemapper_cleanup
+    exports_cleanup
     return $OCF_SUCCESS
 }
 
