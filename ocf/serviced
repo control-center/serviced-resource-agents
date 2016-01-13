@@ -126,8 +126,8 @@ nfs_umount() {
     ocf_log info "Unexporting all NFS volumes"
     ocf_run -warn exportfs -ua
 
-    ocf_log info "Unmounting /exports/serviced_var_volumes"
-    ocf_run -warn umount -f -l /exports/serviced_var_volumes
+    ocf_log info "Unmounting /exports/serviced_volumes_v2"
+    ocf_run -warn umount -f -l /exports/serviced_volumes_v2
 }
 
 ##############################################################################

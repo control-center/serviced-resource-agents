@@ -126,7 +126,7 @@ unmount_all_tenant_volumes() {
     ocf_log info "Beginning unmounting all serviced tenant volumes"
 
     # Unmount exported volumes first
-    TENANT_MOUNTS=`grep /exports/serviced_var_volumes /proc/mounts | cut -d' ' -f2`
+    TENANT_MOUNTS=`grep /exports/serviced_volumes_v2 /proc/mounts | cut -d' ' -f2`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
         ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
@@ -191,7 +191,7 @@ exports_cleanup() {
         return
     fi
 
-    ocf_run -q -warn sed -i '/^\/exports\/serviced_var_volumes/d' /etc/exports
+    ocf_run -q -warn sed -i '/^\/exports\/serviced_volumes_v2/d' /etc/exports
     ocf_log info "Finished exports cleanup"
 }
 
