@@ -135,7 +135,7 @@ unmount_all_tenant_volumes() {
     # For scenarios where serviced failed to shtudown completely, there may be
     # dangling devicemapper mounts as well. These need to be unmounted so that
     # the devicemapper devices can be completed deactivated.
-    TENANT_MOUNTS=`grep /opt/serviced/var/volumes/[a-zA-Z0-9]* /proc/mounts | cut -d' ' -f2`
+    TENANT_MOUNTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
         ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
