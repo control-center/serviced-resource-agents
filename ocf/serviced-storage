@@ -51,7 +51,8 @@
 # limitations under the License.
 #
 # OCF instance parameters:
-# OCF_RESKEY_binary
+# OCF_RESKEY_serviced
+# OCF_RESKEY_serviced_storage
 # OCF_RESKEY_config
 ##############################################################################
 # Initialization
@@ -63,10 +64,12 @@
 
 # Fill in some defaults if no values are specified
 
-OCF_RESKEY_binary_default="serviced-storage"
+OCF_RESKEY_serviced_default="serviced"
+OCF_RESKEY_serviced_storage_default="serviced-storage"
 OCF_RESKEY_config_default="/etc/default/serviced"
 
-: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+: ${OCF_RESKEY_serviced=${OCF_RESKEY_serviced_default}}
+: ${OCF_RESKEY_serviced_storage=${OCF_RESKEY_serviced_storage_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 
 ##############################################################################
@@ -101,12 +104,20 @@ Primarily responsibly for umounting devicemapper-based storage managed by servic
 
 <parameters>
 
-<parameter name="binary" unique="0" required="0">
+<parameter name="serviced" unique="0" required="0">
 <longdesc lang="en">
 Location of the Control Center binary (serviced)
 </longdesc>
 <shortdesc lang="en">Control Center binary (serviced)</shortdesc>
-<content type="string" default="${OCF_RESKEY_binary_default}" />
+<content type="string" default="${OCF_RESKEY_serviced_default}" />
+</parameter>
+
+<parameter name="servied_storage" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center storage tool binary (serviced-storage)
+</longdesc>
+<shortdesc lang="en">Control Center storage tool binary (serviced-storage)</shortdesc>
+<content type="string" default="${OCF_RESKEY_serviced_storage_default}" />
 </parameter>
 
 <parameter name="config" unique="0" required="0">
@@ -138,7 +149,7 @@ get_serviced_property() {
     propName=$1
 
     # ignore comment lines and return the first line that matches the property name
-    propEntry=`grep -v ^# /etc/default/serviced 2>/dev/null | grep -w -m 1 $propName `
+    propEntry=`${OCF_RESKEY_serviced} config | grep -w -m 1 $propName `
     propValue=`echo $propEntry | cut -d\= -f2 `
     echo "$propValue"
 }
@@ -161,7 +172,7 @@ unmount_all_tenant_volumes() {
     TENANT_MOUNTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
-        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
+        ocf_run umount -f $volume
     done
     ocf_log info "Finished unmounting all serviced tenant volumes"
 }
@@ -172,8 +183,7 @@ unmount_all_tenant_volumes() {
 # stopped, and all of the serviced devicemapper devices have been unmounted.
 devicemapper_cleanup() {
     if [ ! -d /opt/serviced/var/volumes ]; then
-        return
-    elif [ ! which ${OCF_RESKEY_binary} > /dev/null 2>&1 ]; then
+        ocf_log warn "No /opt/serviced/var/volumes directory found"
         return
     fi
 
@@ -190,7 +200,7 @@ devicemapper_cleanup() {
     fi
 
     ocf_log info "Beginning devicemapper cleanup"
-    ocf_run ${OCF_RESKEY_binary} disable /opt/serviced/var/volumes -o dm.thinpooldev=$thinPool -v || exit $OCF_ERR_GENERIC
+    ocf_run -warn ${OCF_RESKEY_serviced_storage} disable /opt/serviced/var/volumes -o dm.thinpooldev=$thinPool -v
     ocf_log info "Finished devicemapper cleanup"
 }
 
@@ -216,7 +226,8 @@ exports_cleanup() {
 
 serviced_storage_validate() {
     ocf_log info "serviced_storage_validate"
-    check_binary $OCF_RESKEY_binary
+    check_binary $OCF_RESKEY_serviced
+    check_binary $OCF_RESKEY_serviced_storage
     return $OCF_SUCCESS
 }
 
