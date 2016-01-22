@@ -51,6 +51,8 @@
 # limitations under the License.
 #
 # OCF instance parameters:
+# OCF_RESKEY_serviced
+# OCF_RESKEY_serviced_storage
 # OCF_RESKEY_config
 ##############################################################################
 # Initialization
@@ -62,8 +64,12 @@
 
 # Fill in some defaults if no values are specified
 
+OCF_RESKEY_serviced_default="serviced"
+OCF_RESKEY_serviced_storage_default="serviced-storage"
 OCF_RESKEY_config_default="/etc/default/serviced"
 
+: ${OCF_RESKEY_serviced=${OCF_RESKEY_serviced_default}}
+: ${OCF_RESKEY_serviced_storage=${OCF_RESKEY_serviced_storage_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 
 ##############################################################################
@@ -98,6 +104,22 @@ Primarily responsibly for umounting devicemapper-based storage managed by servic
 
 <parameters>
 
+<parameter name="serviced" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center binary (serviced)
+</longdesc>
+<shortdesc lang="en">Control Center binary (serviced)</shortdesc>
+<content type="string" default="${OCF_RESKEY_serviced_default}" />
+</parameter>
+
+<parameter name="servied_storage" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center storage tool binary (serviced-storage)
+</longdesc>
+<shortdesc lang="en">Control Center storage tool binary (serviced-storage)</shortdesc>
+<content type="string" default="${OCF_RESKEY_serviced_storage_default}" />
+</parameter>
+
 <parameter name="config" unique="0" required="0">
 <longdesc lang="en">
 Location of the Control Center (serviced) configuration file
@@ -121,6 +143,18 @@ END
 }
 
 ##############################################################################
+# Get the value of a serviced configuratoin property. Return empty string if
+# the property is not found.
+get_serviced_property() {
+    propName=$1
+
+    # ignore comment lines and return the first line that matches the property name
+    propEntry=`${OCF_RESKEY_serviced} config | grep -w -m 1 $propName `
+    propValue=`echo $propEntry | cut -d\= -f2 `
+    echo "$propValue"
+}
+
+##############################################################################
 # Make sure that all tenant directories are unmounted
 unmount_all_tenant_volumes() {
     ocf_log info "Beginning unmounting all serviced tenant volumes"
@@ -138,7 +172,7 @@ unmount_all_tenant_volumes() {
     TENANT_MOUNTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
-        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
+        ocf_run umount -f $volume
     done
     ocf_log info "Finished unmounting all serviced tenant volumes"
 }
@@ -149,34 +183,24 @@ unmount_all_tenant_volumes() {
 # stopped, and all of the serviced devicemapper devices have been unmounted.
 devicemapper_cleanup() {
     if [ ! -d /opt/serviced/var/volumes ]; then
+        ocf_log warn "No /opt/serviced/var/volumes directory found"
         return
-    elif [ ! which dmsetup > /dev/null 2>&1 ]; then
+    fi
+
+    fsType=`get_serviced_property SERVICED_FS_TYPE`
+    if [ "$fsType" != "devicemapper" ]; then
+        ocf_log warn "Skipping devicemapper cleanup because SERVICED_FS_TYPE=$fsType"
+        return
+    fi
+
+    thinPool=`get_serviced_property SERVICED_DM_THINPOOLDEV`
+    if [ -z "$thinPool" ]; then
+        ocf_log warn "Skipping devicemapper cleanup because SERVICED_DM_THINPOOLDEV not defined"
         return
     fi
 
     ocf_log info "Beginning devicemapper cleanup"
-    VOLUME_METAS=`find /opt/serviced/var/volumes -name metadata.json`
-    for metadata in $VOLUME_METAS; do
-        currentDevice=`grep -s CurrentDevice $metadata `
-        if [ $? -eq 0 ]; then
-            # get the value of the CurrentDevice property
-            deviceID=`echo ${currentDevice} | cut -d, -f1 | cut -d: -f2 | tr -d '"' `
-            ocf_log debug "for $metadata, deviceID=$deviceID"
-
-            # see if there is an active device whose name contains the deviceID (e.g. docker-nnn:n-nnn-<deviceID>)
-            dmDeviceName=`dmsetup ls | grep -s ${deviceID} `
-            if [ $? -eq 0 ]; then
-                # trim the "(<major>,<minor>)" suffix provided by the dmsetup-ls output
-                dmDeviceName=`echo ${dmDeviceName} | cut -d' ' -f1 `
-                ocf_log info "Removing devicemapper device named '${dmDeviceName}' ..."
-                ocf_run dmsetup --force remove $dmDeviceName || exit $OCF_ERR_GENERIC
-            else
-                ocf_log info "No devicemapper deviceID '${deviceID}' active"
-            fi
-        else
-            ocf_log warn "The file ${metadata} does not contain a 'CurrentDevice' property"
-        fi
-    done
+    ocf_run -warn ${OCF_RESKEY_serviced_storage} disable /opt/serviced/var/volumes -o dm.thinpooldev=$thinPool -v
     ocf_log info "Finished devicemapper cleanup"
 }
 
@@ -202,6 +226,8 @@ exports_cleanup() {
 
 serviced_storage_validate() {
     ocf_log info "serviced_storage_validate"
+    check_binary $OCF_RESKEY_serviced
+    check_binary $OCF_RESKEY_serviced_storage
     return $OCF_SUCCESS
 }
 
