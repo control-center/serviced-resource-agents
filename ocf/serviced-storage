@@ -249,6 +249,12 @@ serviced_storage_monitor() {
 serviced_storage_start() {
     ocf_log info "serviced_storage_start"
     exports_cleanup
+
+    # CC-2183: the OCF LVM resource agent will issue a 'vgchange -aly serviced' on startup.
+    # This has the side-effect of enabling monitoring for the LV, even if its been disabled before.
+    # Therefore, we need to manually disable monitoring ourselves on every startup.
+    ocf_log info "Disabling LVM monitoring ...."
+    lvchange --monitor n serviced/serviced-pool
     return $OCF_SUCCESS
 }
 
