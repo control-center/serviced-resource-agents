@@ -188,7 +188,9 @@ serviced_monitor() {
         [ $rc -eq 0 ] && break
         if [ $rc -ne 2 ]; then
             ocf_log err "Control Center (serviced) failed healthchecks"
-            return $OCF_NOT_RUNNING
+            # $OCF_NOT_RUNNING - means the resource has stopped gracefully
+            # $OCF_ERR_GENERIC - means resource has failed
+            return $OCF_ERR_GENERIC
         fi
         sleep 1
     done
