@@ -33,6 +33,7 @@ CATEGORY       = admin
 PKG_VERSION = $(VERSION)
 FULL_NAME   = $(NAME)
 
+
 TEST_CONFIG ?= /etc/default/serviced
 
 define DESCRIPTION
@@ -48,11 +49,11 @@ all: docker-rpm docker-deb
 
 docker-rpm:
 	docker build -t zenoss/serviced-resource-agents:rpm-$(PKG_VERSION) ./pkg/rpm
-	docker run --rm -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:rpm-$(PKG_VERSION)
+	docker run --rm --user $(DUID):$(DGID) -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:rpm-$(PKG_VERSION)
 
 docker-deb:
 	docker build -t zenoss/serviced-resource-agents:deb-$(PKG_VERSION) ./pkg/deb
-	docker run --rm -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:deb-$(PKG_VERSION)
+	docker run --rm --user $(DUID):$(DGID) -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:deb-$(PKG_VERSION)
 
 usage:
 	echo "Usage: make deb or make rpm.  Both options package $(FULL_NAME)-$(PKG_VERSION)."
