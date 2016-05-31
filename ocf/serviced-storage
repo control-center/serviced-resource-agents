@@ -143,7 +143,7 @@ END
 }
 
 ##############################################################################
-# Get the value of a serviced configuratoin property. Return empty string if
+# Get the value of a serviced configuration property. Return empty string if
 # the property is not found.
 get_serviced_property() {
     propName=$1
@@ -155,13 +155,27 @@ get_serviced_property() {
 }
 
 ##############################################################################
+# Prints a newline-separated list of exported volumes to stdout
+getExportedVolumes() {
+    MOUNT_POINTS=`grep /exports/serviced_volumes_v2 /proc/mounts | cut -d' ' -f2`
+    echo "$MOUNT_POINTS"
+}
+
+##############################################################################
+# Prints a newline-separated list of tenant volumes to stdout
+getTenantVolumes() {
+    MOUNT_POINTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
+    echo "$MOUNT_POINTS"
+}
+
+##############################################################################
 # Make sure that all tenant directories are unmounted
 unmount_all_tenant_volumes() {
     ocf_log info "Beginning unmounting all serviced tenant volumes"
 
     # Unmount exported volumes first
-    TENANT_MOUNTS=`grep /exports/serviced_volumes_v2 /proc/mounts | cut -d' ' -f2`
-    for volume in $TENANT_MOUNTS; do
+    EXPORTED_MOUNTS=`getExportedVolumes`
+    for volume in $EXPORTED_MOUNTS; do
         ocf_log info "Unmounting $volume"
         ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
     done
@@ -169,7 +183,7 @@ unmount_all_tenant_volumes() {
     # For scenarios where serviced failed to shtudown completely, there may be
     # dangling devicemapper mounts as well. These need to be unmounted so that
     # the devicemapper devices can be completed deactivated.
-    TENANT_MOUNTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
+    TENANT_MOUNTS=`getTenantVolumes`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
         ocf_run umount -f $volume
@@ -236,9 +250,45 @@ serviced_storage_status() {
     return $OCF_SUCCESS
 }
 
-# This should never be called because monitor interval=0, but include it for completeness
+##############################################################################
+# Even if monitor interval=0, this method may be called by PCS in special
+# circumstances such as after the passive node restarts.  Therefore, it needs
+# to follow the standard OCF guideilnes - meaning it can not simply always
+# reutrn OCF_SUCCESS. Otherwise, PCS gets a little crazy thinking that it
+# has a resource simultaneously running on both the
+# active and passive node (see CC-2258).
+#
+# For the purposes of this monitor, the storage is considered "running" if
+# we have an active mount point for one of the CC tenant volumes.
 serviced_storage_monitor() {
-    ocf_log info "serviced_storage_monitor: instance=${OCF_RESOURCE_INSTANCE}"
+    ocf_log info "serviced_storage_monitor: checking instance=${OCF_RESOURCE_INSTANCE}"
+
+    EXPORTED_MOUNTS=`getExportedVolumes`
+    if [ -z "$EXPORTED_MOUNTS" ]; then
+        nExportedMounts=0
+    else
+        nExportedMounts=`echo "$EXPORTED_MOUNTS" | wc -l`
+    fi
+
+    TENANT_MOUNTS=`getTenantVolumes`
+    if [ -z "$TENANT_MOUNTS" ]; then
+        nTenantMounts=0
+    else
+        nTenantMounts=`echo "$TENANT_MOUNTS" | wc -l`
+    fi
+
+    totalMounts=$((nExportedMounts + nTenantMounts))
+
+    if [ $totalMounts -eq 0 ]; then
+        ocf_log info "serviced_storage_monitor: NOT RUNNING"
+        return $OCF_NOT_RUNNING
+    fi
+
+    ocf_log info "totalMounts=$totalMounts"
+    ocf_log info "EXPORTED_MOUNTS=${EXPORTED_MOUNTS}"
+    ocf_log info "TENANT_MOUNTS=${TENANT_MOUNTS}"
+    ocf_log info "serviced_storage_monitor: SUCCESS"
+    return $OCF_SUCCESS
 }
 
 # serviced manages its own storage, so there's really nothing to start but we
