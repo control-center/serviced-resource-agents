@@ -115,30 +115,6 @@ END
 
 
 ##############################################################################
-#
-# Internal method to release NFS mounts used by serviced.
-#
-# serviced is responsible for starting NFS, adding entries to /etc/exports,
-# and exporting /opt/serviced/var/volumes. When a failover occurs, we need to
-# make sure that /opt/serviced/var/volumes is no longer exported and mounted.
-#
-nfs_umount() {
-    ocf_log info "Unexporting all NFS volumes"
-    ocf_run -warn exportfs -ua
-
-    ocf_log info "Unmounting /exports/serviced_volumes_v2"
-    ocf_run -warn umount -f -l /exports/serviced_volumes_v2
-}
-
-##############################################################################
-#
-# Internal method to handle all cleanup actions after serviced is stopped
-#
-cleanup() {
-    nfs_umount
-}
-
-##############################################################################
 # Functions invoked by resource manager actions
 
 serviced_validate() {
@@ -284,7 +260,6 @@ serviced_stop() {
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) could not be stopped"
-            cleanup
             return $rc
         fi
     fi
@@ -292,7 +267,6 @@ serviced_stop() {
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
 
-    cleanup
     return $OCF_SUCCESS
 }
 
