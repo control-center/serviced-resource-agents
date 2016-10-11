@@ -1,0 +1,340 @@
+#!/bin/bash
+#
+#
+#           Resource agent for managing serviced storage.
+#
+# Modeled from https://github.com/madkiss/openstack-resource-agents
+#
+# This resource agent is responsible for stopping serviced storage. Unlike
+# a normal resource agent, this script does not actually start a process or
+# monitor a running service. Its only real function is to remove the serviced
+# devicemapper device(s) on 'stop'.  In the relative order of resource
+# agents, this resource agent must be placed BEFORE the NFS and serviced
+# resource agents so that no remote NFS client mounts can prevent the
+# devicemapper device from being removed.
+#
+# Additionally, there is a potential problem on startup w.r.t. NFS exports.
+# If /etc/exports contains an entry to export a serviced tenant directory,
+# then the NFS server will export that directory when it starts, even if
+# serviced has not yet bind mounted that directory to the corresponding
+# directory in /opt/serviced/var/volumes. This can lead to stale NFS file
+# handles on the agent nodes.  To avoid this problem, the 'start' action
+# of this resource agent will remove entries from /etc/exports for any
+# tenant applications. Since this reource agent should be run before the
+# NFS agent, this ensures that NFS does not export the mount point before
+# serviced has bind mounted it to /opt/serviced/var/volumes/<tenantID>.
+#
+# Background:
+#
+# If the serviced devicemapper device is not unmounted and deactivated, then
+# the LVM resource agent will not be able to stop the logical volume group
+# for the devicemapper thinpool and HA failover will stop with an error.
+# This situation can occur in a couple of different ways. For instance, if
+# serviced shutdown never completes (e.g. serviced crashes or receives a
+# SIGKILL), then the device will not be unmounted and deactivated by serviced.
+# Even when serviced shuts down normally, if a remote client has the tenant
+# directory mounted, then the devicemapper device will be unmounted by
+# serviced, but not deactivated ('Device is busy') - which also prevents the
+# LVM from being stopped (again becuase of 'Device is busy' errors).
+#
+# Copyright 2015 The Serviced Authors.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# OCF instance parameters:
+# OCF_RESKEY_serviced
+# OCF_RESKEY_serviced_storage
+# OCF_RESKEY_config
+##############################################################################
+# Initialization
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+##############################################################################
+
+# Fill in some defaults if no values are specified
+
+OCF_RESKEY_serviced_default="serviced"
+OCF_RESKEY_serviced_storage_default="serviced-storage"
+OCF_RESKEY_config_default="/etc/default/serviced"
+
+: ${OCF_RESKEY_serviced=${OCF_RESKEY_serviced_default}}
+: ${OCF_RESKEY_serviced_storage=${OCF_RESKEY_serviced_storage_default}}
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+
+##############################################################################
+
+usage() {
+    cat <<UEND
+        usage: $0 (start|stop|validate-all|meta-data|status|monitor)
+
+        $0 manages Control Center Master Service (serviced) storage as an HA resource.
+
+        The 'start' operation starts the serviced storage service.
+        The 'stop' operation stops the serviced storage service.
+        The 'validate-all' operation reports whether the parameters are valid.
+        The 'meta-data' operation reports this RA's meta-data information.
+        The 'status' operation reports whether the serviced storage service is running
+        The 'monitor' operation reports whether the serviced storage service seems to be working.
+UEND
+}
+
+meta_data() {
+    cat <<END
+<?xml version="1.0" ?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="serviced-storage">
+<version>1.0</version>
+
+<longdesc lang="en">
+Resource agent for the Control Center Master Service storage (serviced-storage).
+Primarily responsibly for umounting devicemapper-based storage managed by serviced.
+</longdesc>
+<shortdesc lang="en">Manages the Control Center Master Service storage (serviced-storage).</shortdesc>
+
+<parameters>
+
+<parameter name="serviced" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center binary (serviced)
+</longdesc>
+<shortdesc lang="en">Control Center binary (serviced)</shortdesc>
+<content type="string" default="${OCF_RESKEY_serviced_default}" />
+</parameter>
+
+<parameter name="servied_storage" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center storage tool binary (serviced-storage)
+</longdesc>
+<shortdesc lang="en">Control Center storage tool binary (serviced-storage)</shortdesc>
+<content type="string" default="${OCF_RESKEY_serviced_storage_default}" />
+</parameter>
+
+<parameter name="config" unique="0" required="0">
+<longdesc lang="en">
+Location of the Control Center (serviced) configuration file
+</longdesc>
+<shortdesc lang="en">Control Center (serviced) configuration file</shortdesc>
+<content type="string" default="${OCF_RESKEY_config_default}" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start" timeout="10" />
+<action name="stop" timeout="60" />
+<action name="status" timeout="10" />
+<action name="monitor" timeout="10" interval="0" />
+<action name="validate-all" timeout="10" />
+<action name="meta-data" timeout="10" />
+</actions>
+</resource-agent>
+END
+}
+
+##############################################################################
+# Get the value of a serviced configuration property. Return empty string if
+# the property is not found.
+get_serviced_property() {
+    propName=$1
+
+    # ignore comment lines and return the first line that matches the property name
+    propEntry=`${OCF_RESKEY_serviced} config | grep -w -m 1 $propName `
+    propValue=`echo $propEntry | cut -d\= -f2 `
+    echo "$propValue"
+}
+
+##############################################################################
+# Prints a newline-separated list of exported volumes to stdout
+getExportedVolumes() {
+    MOUNT_POINTS=`grep /exports/serviced_volumes_v2 /proc/mounts | cut -d' ' -f2`
+    echo "$MOUNT_POINTS"
+}
+
+##############################################################################
+# Prints a newline-separated list of tenant volumes to stdout
+getTenantVolumes() {
+    MOUNT_POINTS=`grep '/opt/serviced/var/volumes/[a-zA-Z0-9]*' /proc/mounts | cut -d' ' -f2`
+    echo "$MOUNT_POINTS"
+}
+
+##############################################################################
+# Make sure that all tenant directories are unmounted
+unmount_all_tenant_volumes() {
+    ocf_log info "Beginning unmounting all serviced tenant volumes"
+
+    # Unmount exported volumes first
+    EXPORTED_MOUNTS=`getExportedVolumes`
+    for volume in $EXPORTED_MOUNTS; do
+        ocf_log info "Unmounting $volume"
+        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
+    done
+
+    # For scenarios where serviced failed to shtudown completely, there may be
+    # dangling devicemapper mounts as well. These need to be unmounted so that
+    # the devicemapper devices can be completed deactivated.
+    TENANT_MOUNTS=`getTenantVolumes`
+    for volume in $TENANT_MOUNTS; do
+        ocf_log info "Unmounting $volume"
+        ocf_run umount -f $volume
+    done
+    ocf_log info "Finished unmounting all serviced tenant volumes"
+}
+
+##############################################################################
+# Make sure that all devicemapper devices created by serviced are deactivated.
+# Note: This function will only work after both serviced and NFS have been
+# stopped, and all of the serviced devicemapper devices have been unmounted.
+devicemapper_cleanup() {
+    if [ ! -d /opt/serviced/var/volumes ]; then
+        ocf_log warn "No /opt/serviced/var/volumes directory found"
+        return
+    fi
+
+    fsType=`get_serviced_property SERVICED_FS_TYPE`
+    if [ "$fsType" != "devicemapper" ]; then
+        ocf_log warn "Skipping devicemapper cleanup because SERVICED_FS_TYPE=$fsType"
+        return
+    fi
+
+    thinPool=`get_serviced_property SERVICED_DM_THINPOOLDEV`
+    if [ -z "$thinPool" ]; then
+        ocf_log warn "Skipping devicemapper cleanup because SERVICED_DM_THINPOOLDEV not defined"
+        return
+    fi
+
+    ocf_log info "Beginning devicemapper cleanup"
+    ocf_run -warn ${OCF_RESKEY_serviced_storage} disable /opt/serviced/var/volumes -o dm.thinpooldev=$thinPool -v
+    ocf_log info "Finished devicemapper cleanup"
+}
+
+##############################################################################
+# Cleanup /etc/exports by removing any entries for all serviced tenant apps
+# (see the comments at the top of this file).
+exports_cleanup() {
+    ocf_log info "Beginning exports cleanup"
+
+    if [ ! -f /etc/exports ]; then
+        ocf_log warn "No /etc/exports file found"
+        return
+    fi
+
+    ocf_run -q -warn sed -i '/^\/exports\/serviced_volumes_v2/d' /etc/exports
+    ocf_log info "Finished exports cleanup"
+}
+
+##############################################################################
+# Functions invoked by resource manager actions. With the exception of the
+# stop action, all of these functions are a no-op since this resource agent
+# does not manage an actual process or service.
+
+serviced_storage_validate() {
+    ocf_log info "serviced_storage_validate"
+    check_binary $OCF_RESKEY_serviced
+    check_binary $OCF_RESKEY_serviced_storage
+    return $OCF_SUCCESS
+}
+
+serviced_storage_status() {
+    ocf_log info "serviced_storage_status"
+    return $OCF_SUCCESS
+}
+
+##############################################################################
+# Even if monitor interval=0, this method may be called by PCS in special
+# circumstances such as after the passive node restarts.  Therefore, it needs
+# to follow the standard OCF guideilnes - meaning it can not simply always
+# reutrn OCF_SUCCESS. Otherwise, PCS gets a little crazy thinking that it
+# has a resource simultaneously running on both the
+# active and passive node (see CC-2258).
+#
+# For the purposes of this monitor, the storage is considered "running" if
+# we have an active mount point for one of the CC tenant volumes.
+serviced_storage_monitor() {
+    ocf_log info "serviced_storage_monitor: checking instance=${OCF_RESOURCE_INSTANCE}"
+
+    EXPORTED_MOUNTS=`getExportedVolumes`
+    if [ -z "$EXPORTED_MOUNTS" ]; then
+        nExportedMounts=0
+    else
+        nExportedMounts=`echo "$EXPORTED_MOUNTS" | wc -l`
+    fi
+
+    TENANT_MOUNTS=`getTenantVolumes`
+    if [ -z "$TENANT_MOUNTS" ]; then
+        nTenantMounts=0
+    else
+        nTenantMounts=`echo "$TENANT_MOUNTS" | wc -l`
+    fi
+
+    totalMounts=$((nExportedMounts + nTenantMounts))
+
+    if [ $totalMounts -eq 0 ]; then
+        ocf_log info "serviced_storage_monitor: NOT RUNNING"
+        return $OCF_NOT_RUNNING
+    fi
+
+    ocf_log info "totalMounts=$totalMounts"
+    ocf_log info "EXPORTED_MOUNTS=${EXPORTED_MOUNTS}"
+    ocf_log info "TENANT_MOUNTS=${TENANT_MOUNTS}"
+    ocf_log info "serviced_storage_monitor: SUCCESS"
+    return $OCF_SUCCESS
+}
+
+# serviced manages its own storage, so there's really nothing to start but we
+# need to make sure that NFS exports are cleaned up to avoid letting the NFS
+# server export a directory before serviced has mounted the underlying
+# /opt/serviced/var/volumes/<tenantID> directory (see comments at the top of
+# this file).
+serviced_storage_start() {
+    ocf_log info "serviced_storage_start"
+    exports_cleanup
+
+    # CC-2183: the OCF LVM resource agent will issue a 'vgchange -aly serviced' on startup.
+    # This has the side-effect of enabling monitoring for the LV, even if its been disabled before.
+    # Therefore, we need to manually disable monitoring ourselves on every startup.
+    ocf_log info "Disabling LVM monitoring ...."
+    lvchange --monitor n serviced/serviced-pool
+    return $OCF_SUCCESS
+}
+
+serviced_storage_stop() {
+    ocf_log info "serviced_storage_stop"
+    unmount_all_tenant_volumes
+    devicemapper_cleanup
+    exports_cleanup
+    return $OCF_SUCCESS
+}
+
+##############################################################################
+
+case "$1" in
+meta-data)          meta_data
+                    exit $OCF_SUCCESS;;
+usage|help)         usage
+                    exit $OCF_SUCCESS;;
+esac
+
+# Anything except meta-data and help must pass validation
+serviced_storage_validate || exit $?
+
+# What kind of method was invoked?
+case "$1" in
+start)              serviced_storage_start;;
+stop)               serviced_storage_stop;;
+status)             serviced_storage_status;;
+monitor)            serviced_storage_monitor;;
+validate-all)       ;;
+*)                  usage
+                    exit $OCF_ERR_UNIMPLEMENTED;;
+esac

@@ -102,8 +102,8 @@ The pid file to use for this Control Center (serviced) instance
 </parameters>
 
 <actions>
-<action name="start" timeout="60" />
-<action name="stop" timeout="90" />
+<action name="start" timeout="360" />
+<action name="stop" timeout="130" />
 <action name="status" timeout="20" />
 <action name="monitor" timeout="30" interval="30" />
 <action name="validate-all" timeout="5" />
@@ -113,22 +113,6 @@ The pid file to use for this Control Center (serviced) instance
 END
 }
 
-
-##############################################################################
-#
-# Internal method to release NFS mounts used by serviced.
-#
-# serviced is responsible for starting NFS, adding entries to /etc/exports,
-# and exporting /opt/serviced/var/volumes. When a failover occurs, we need to
-# make sure that /opt/serviced/var/volumes is no longer exported and mounted.
-#
-nfs_umount() {
-    ocf_log info "Unexporting all NFS volumes"
-    exportfs -ua
-
-    ocf_log info "Unmounting /exports/serviced_var_volumes"
-    umount -f -l /exports/serviced_var_volumes
-}
 
 ##############################################################################
 # Functions invoked by resource manager actions
@@ -180,7 +164,9 @@ serviced_monitor() {
         [ $rc -eq 0 ] && break
         if [ $rc -ne 2 ]; then
             ocf_log err "Control Center (serviced) failed healthchecks"
-            return $OCF_NOT_RUNNING
+            # $OCF_NOT_RUNNING - means the resource has stopped gracefully
+            # $OCF_ERR_GENERIC - means resource has failed
+            return $OCF_ERR_GENERIC
         fi
         sleep 1
     done
@@ -274,15 +260,12 @@ serviced_stop() {
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
             ocf_log err "Control Center (serviced) could not be stopped"
-            nfs_umount
             return $rc
         fi
     fi
 
     ocf_log info "Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
-
-    nfs_umount
 
     return $OCF_SUCCESS
 }
