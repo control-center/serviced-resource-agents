@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/bin/bash
 #
 #
 #           Resource agent for managing serviced resources.
@@ -35,12 +35,13 @@
 OCF_RESKEY_binary_default="serviced"
 OCF_RESKEY_config_default="/etc/default/serviced"
 OCF_RESKEY_pid_default="$HA_RSCTMP/$OCF_RESOURCE_INSTANCE.pid"
-OCF_RESKEY_rpcport_default="4979"
+OCF_RESKEY_verbose_default="false"
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
-: ${OCF_RESKEY_rpcport=${OCF_RESKEY_rpcport_default}}
+: ${OCF_RESKEY_verbose=${OCF_RESKEY_verbose_default}}
+
 
 ##############################################################################
 
@@ -68,8 +69,9 @@ meta_data() {
 
 <longdesc lang="en">
 Resource agent for the Control Center Master Service (serviced)
-May manage a serviced instance that manages a set of serviced agents on varying
-hosts.
+Manages the Control Center Master Service which orchestrates
+execution of one or more dockerized application microservices
+across a set of Control Center Delegates.
 </longdesc>
 <shortdesc lang="en">Manages the Control Center Master Service (serviced)</shortdesc>
 
@@ -99,6 +101,14 @@ The pid file to use for this Control Center (serviced) instance
 <content type="string" default="${OCF_RESKEY_pid_default}" />
 </parameter>
 
+<parameter name="verbose" unique="0" required="0">
+<longdesc lang="en">
+Enable verbose logging for this resource agent
+</longdesc>
+<shortdesc lang="en">Set to 'true' to enable verbose logging</shortdesc>
+<content type="string" default="${OCF_RESKEY_verbose}" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -113,6 +123,25 @@ The pid file to use for this Control Center (serviced) instance
 END
 }
 
+##############################################################################
+# Utility function to log additionaly INFO level messages when this resource
+# agent is running in verbose mode.
+#
+# To enable verbose mode, use "pcs resource update serviced verbose=true"
+#
+# To disable verbose mode, use "pcs resource update serviced verbose="
+#
+# To view the current mode, use "pcs resource show serviced" and inspect
+# the line for "Attributes:". If no "Attributes:" line is displayed, or it
+# does not contain verbose=true, then verbose mode is disabled.
+#
+verbose_log() {
+    if [ "${OCF_RESKEY_verbose}" != "true" ]; then
+        return
+    fi
+
+    ocf_log info $*
+}
 
 ##############################################################################
 # Functions invoked by resource manager actions
@@ -137,10 +166,10 @@ serviced_status() {
     ocf_pidfile_status $OCF_RESKEY_pid
     rc=$?
     if [ $rc -eq 2 ]; then
-        ocf_log info "Control Center (serviced) is not running"
+        ocf_log info "serviced_status - Control Center (serviced) is not running"
         return $OCF_NOT_RUNNING
     elif [ $rc -eq 1 ]; then
-        ocf_log info "Old PID file found, but Control Center (serviced) is not running"
+        ocf_log info "serviced_status - Old PID file found, but Control Center (serviced) is not running"
         return $OCF_NOT_RUNNING
     fi
 
@@ -149,6 +178,20 @@ serviced_status() {
 
 serviced_monitor() {
     local rc
+    local phase
+
+    #
+    # serviced_monitor is called while starting the service (serviced_start)
+    # and by PCS for periodic monitoring.
+    #
+    # When phase equals 'startup' that means we are being called during startup
+    # and do not log details about healthcheck failures because we expect
+    # healthchecks to fail several times before CC has completed enough of it's
+    # startup to begin accepting requests.
+    #
+    if [ $# -eq 1 ]; then
+        phase=$1
+    fi
 
     # If status returned anything but success, return that immediately
     serviced_status
@@ -157,19 +200,47 @@ serviced_monitor() {
         return $rc
     fi
 
-    # Spin waiting for a valid healthcheck response
-    while true; do
-        ocf_run -info ${OCF_RESKEY_binary} healthcheck
-        rc=$?
-        [ $rc -eq 0 ] && break
-        if [ $rc -ne 2 ]; then
-            ocf_log err "Control Center (serviced) failed healthchecks"
-            # $OCF_NOT_RUNNING - means the resource has stopped gracefully
-            # $OCF_ERR_GENERIC - means resource has failed
-            return $OCF_ERR_GENERIC
+    LIST_CMD="service list --show-fields Name,ServiceID --ascii"
+    LIST_RESULTS=`${OCF_RESKEY_binary} ${LIST_CMD} 2>&1`
+    if [[ ! $LIST_RESULTS =~ ^(no services found|Name[[:space:]]+ServiceID) ]]; then
+        if [[ "$phase" != "startup" ]] || [[ "${OCF_RESKEY_verbose}" == "true" ]]; then
+            ocf_log err "serviced_monitor - Control Center (serviced) failed healthcheck"
+            ocf_log info "serviced_monitor - Result of '${OCF_RESKEY_binary} ${LIST_CMD}' = '${LIST_RESULTS}'"
         fi
-        sleep 1
-    done
+        return $OCF_ERR_GENERIC
+    fi
+
+    if [ "${LIST_RESULTS}" == "no services found" ]; then
+        verbose_log "serviced_monitor - no leaf services found"
+        return $OCF_SUCCESS
+    fi
+
+    verbose_log "serviced_monitor - LIST_RESULTS='${LIST_RESULTS}'"
+
+    # Find the id of a 'leaf' service; i.e. one with no child services.
+    # With the ASCII output format, the list of services will have a "+" preceding services
+    # that have children (so exclude those).
+    # The particular service choosen doesn't matter, so get the last one in the list.
+    #
+    # This technique is used to avoid hard-coding any particular service name
+    LEAF_SERVICE_ID=`echo "${LIST_RESULTS}" | grep -v \+ 2>&1 | tail -n 1 2>&1 | awk '{print $2}' 2>&1`
+    verbose_log "serviced_monitor - found LEAF_SERVICE_ID='${LEAF_SERVICE_ID}'"
+
+    # Now check the service status which will exercise calls to both the database
+    # and to zookeeper. At this point, we are not interested in the status of the particular
+    # service - instead, we want to exercise enough of the CC internals to demonstrate that
+    # it can respond to basic commands. Note that 'service status' is bit more involved than
+    # 'service list'.
+    STATUS_CMD="service status --show-fields Name,Status ${LEAF_SERVICE_ID}"
+    STATUS_RESULTS=`${OCF_RESKEY_binary} ${STATUS_CMD} 2>&1`
+    if [[ ! $STATUS_RESULTS =~ ^(service not found|Name[[:space:]]+Status) ]]; then
+        if [[ "${phase}" != "startup" ]] || [[ "${OCF_RESKEY_verbose}" == "true" ]]; then
+            ocf_log err "serviced_monitor - Control Center (serviced) failed healthcheck"
+            ocf_log info "serviced_monitor - Result of '${OCF_RESKEY_binary} ${STATUS_CMD}' = '${STATUS_RESULTS}'"
+        fi
+        return $OCF_ERR_GENERIC
+    fi
+    verbose_log "serviced_monitor - found STATUS_RESULTS='${STATUS_RESULTS}'"
 
     return $OCF_SUCCESS
 }
@@ -180,7 +251,7 @@ serviced_start() {
     serviced_status
     rc=$?
     if [ $rc -eq $OCF_SUCCESS ]; then
-        ocf_log info "Control Center (serviced) already running"
+        ocf_log info "serviced_start - Control Center (serviced) already running"
         return $OCF_SUCCESS
     fi
 
@@ -190,6 +261,7 @@ serviced_start() {
 
     # Spin waiting for the server to come up.
     # Let the CRM/LRM time us out if required
+    ocf_log info "serviced_start - begin monitoring startup of Control Center (serviced)"
     while true; do
         # if the server is not running, then exit immediately
         serviced_status
@@ -197,17 +269,17 @@ serviced_start() {
         [ $rc -ne $OCF_SUCCESS ] && exit $OCF_ERR_GENERIC
 
         # wait for the monitor to be successful
-        serviced_monitor
+        serviced_monitor startup
         rc=$?
-        [ $rc -eq $OCF_SUCCESS ] && break
-        if [ $rc -ne $OCF_NOT_RUNNING ]; then
-            ocf_log err "Control Center (serviced) start failed"
-            return $rc
+        if [ $rc -eq $OCF_SUCCESS ]; then
+            break
         fi
-        sleep 1
+
+        ocf_log info "serviced_start - Control Center (serviced) has not started yet, waiting"
+        sleep 2
     done
 
-    ocf_log info "Control Center (serviced) started"
+    ocf_log info "serviced_start - Control Center (serviced) started"
     return $OCF_SUCCESS
 }
 
@@ -218,12 +290,13 @@ serviced_stop() {
     serviced_status
     rc=$?
     if [ $rc -eq $OCF_NOT_RUNNING ]; then
-        ocf_log info "Control Center (serviced) already stopped"
+        ocf_log info "serviced_stop - Control Center (serviced) already stopped"
         return $OCF_SUCCESS
     fi
 
     # Try a normal shutdown.
     # Execute in the background so that we can use our own shutdown_timeout
+    ocf_log info "serviced_stop - begin shutdown of Control Center (serviced)"
     systemctl stop serviced &
 
     # stop waiting
@@ -241,14 +314,14 @@ serviced_stop() {
         fi
         count=`expr $count + 1`
         sleep 1
-        ocf_log debug "Control Center (serviced) still hasn't stopped yet. Waiting ..."
+        verbose_log "serviced_stop - Control Center (serviced) still hasn't stopped yet. Waiting ..."
     done
 
     serviced_status
     rc=$?
     if [ $rc -ne $OCF_NOT_RUNNING ]; then
         # SIGTERM didn't help, try SIGKILL
-        ocf_log info "Control Center (serviced) failed to stop after ${shutdown_timeout}s \
+        ocf_log info "serviced_stop - Control Center (serviced) failed to stop after ${shutdown_timeout}s \
             using SIGTERM.  Trying SIGKILL ..."
 
         pid=`cat $OCF_RESKEY_pid`
@@ -259,12 +332,12 @@ serviced_stop() {
         serviced_status
         rc=$?
         if [ $rc -ne $OCF_NOT_RUNNING ]; then
-            ocf_log err "Control Center (serviced) could not be stopped"
+            ocf_log err "serviced_stop - Control Center (serviced) could not be stopped"
             return $rc
         fi
     fi
 
-    ocf_log info "Control Center (serviced) stopped"
+    ocf_log info "serviced_stop - Control Center (serviced) stopped"
     rm -f $OCF_RESKEY_pid
 
     return $OCF_SUCCESS

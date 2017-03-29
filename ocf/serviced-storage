@@ -186,8 +186,9 @@ unmount_all_tenant_volumes() {
     TENANT_MOUNTS=`getTenantVolumes`
     for volume in $TENANT_MOUNTS; do
         ocf_log info "Unmounting $volume"
-        ocf_run umount -f $volume
+        ocf_run umount -f $volume || exit $OCF_ERR_GENERIC
     done
+
     ocf_log info "Finished unmounting all serviced tenant volumes"
 }
 
@@ -215,6 +216,28 @@ devicemapper_cleanup() {
 
     ocf_log info "Beginning devicemapper cleanup"
     ocf_run -warn ${OCF_RESKEY_serviced_storage} disable /opt/serviced/var/volumes -o dm.thinpooldev=$thinPool -v
+
+    # CC-3283 - deactivate any devices that slipped through the normal checks.
+    #           We may sometimes have these 'stray' devices in cases where a
+    #           snapshot device created for a backup/restore/rollback operation
+    #           was not deactivated by CC for whatever reason (usually some
+    #           kind of unexpected error).
+    ocf_log info "Checking for any stray mounts/devices"
+
+    # Ask lsblk for any dm devices that depend on the thin pool
+    DEVICES="$(lsblk -lnpo NAME,TYPE ${thinPool} 2>&1 | grep '\bdm\b' | awk {'print $1'})"
+
+    # Unmount them and deactivate them
+    for DEVICE in ${DEVICES}; do
+        # ignore errors on umount because the device may not have any filesystems mounted
+        ocf_log info "Unmounting stray device ${DEVICE}"
+        ocf_run -warn umount -A ${DEVICE}
+
+        # But tell PCS something went wrong if we could not deactivate the device
+        ocf_log info "Deactivating stray device ${DEVICE}"
+        ocf_run dmsetup remove ${DEVICE} || exit $OCF_ERR_GENERIC
+    done
+
     ocf_log info "Finished devicemapper cleanup"
 }
 
