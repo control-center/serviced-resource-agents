@@ -178,29 +178,15 @@ check_serviced_exit_code() {
 serviced_status() {
     local pid
     local rc
-
     ocf_pidfile_status $OCF_RESKEY_pid
     rc=$?
     if [ $rc -eq 2 ]; then
-        check_serviced_exit_code
-        exit_ret_val=$?
-        if [ $exit_ret_val -ne 0 ]; then
-            return $exit_ret_val;
-        else
-            ocf_log info "serviced_status - Control Center (serviced) is not running"
-            return $OCF_NOT_RUNNING
-        fi
+        ocf_log info "serviced_status - Control Center (serviced) is not running"
+        return $OCF_NOT_RUNNING
     elif [ $rc -eq 1 ]; then
-        check_serviced_exit_code
-        exit_ret_val=$?
-        if [ $exit_ret_val -ne 0 ]; then
-            return $exit_ret_val;
-        else
-            ocf_log info "serviced_status - Old PID file found, but Control Center (serviced) is not running"
-            return $OCF_NOT_RUNNING
-        fi
+        ocf_log info "serviced_status - Old PID file found, but Control Center (serviced) is not running"
+        return $OCF_NOT_RUNNING
     fi
-
     return $OCF_SUCCESS
 }
 
@@ -212,19 +198,21 @@ serviced_monitor() {
     # serviced_monitor is called while starting the service (serviced_start)
     # and by PCS for periodic monitoring.
     #
-    # When phase equals 'startup' that means we are being called during startup
-    # and do not log details about healthcheck failures because we expect
-    # healthchecks to fail several times before CC has completed enough of it's
-    # startup to begin accepting requests.
-    #
     if [ $# -eq 1 ]; then
         phase=$1
     fi
 
-    # If status returned anything but success, return that immediately
+    # If status returned anything but success, check exit code for serviced.
+    # If exit code is 'killed' or 'exited', then return return code from previous call to serviced_status;
+    # otherwise return error code from check_serviced_exit_code.
     serviced_status
     rc=$?
     if [ $rc -ne $OCF_SUCCESS ]; then
+        check_serviced_exit_code
+        exit_ret_val=$?
+        if [ $exit_ret_val -ne 0 ]; then
+            return $OCF_ERR_GENERIC;
+        fi
         return $rc
     fi
 
