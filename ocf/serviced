@@ -159,6 +159,22 @@ serviced_validate() {
     return $OCF_SUCCESS
 }
 
+check_serviced_exit_code() {
+    exit_code_regex="code=([a-zA-Z]+)"
+    valid_exit_codes="killed|exited"
+    main_pid_line="$(systemctl status serviced | grep 'Main PID:')"
+    if [[ ! -z $main_pid_line ]]; then
+        if [[ $main_pid_line =~ $exit_code_regex ]]; then
+            exit_code_of_prev_cc_pid="${BASH_REMATCH[1]}"
+            if [[ ! $exit_code_of_prev_cc_pid =~ $valid_exit_codes ]]; then
+                ocf_log info "serviced_status - Control Center (serviced) did not exit cleanly with exit code: $exit_code_of_prev_cc_pid" 
+                return $OCF_ERR_GENERIC;
+            fi
+        fi
+    fi
+    return 0;
+}
+
 serviced_status() {
     local pid
     local rc
@@ -166,11 +182,23 @@ serviced_status() {
     ocf_pidfile_status $OCF_RESKEY_pid
     rc=$?
     if [ $rc -eq 2 ]; then
-        ocf_log info "serviced_status - Control Center (serviced) is not running"
-        return $OCF_NOT_RUNNING
+        check_serviced_exit_code
+        exit_ret_val=$?
+        if [ $exit_ret_val -ne 0 ]; then
+            return $exit_ret_val;
+        else
+            ocf_log info "serviced_status - Control Center (serviced) is not running"
+            return $OCF_NOT_RUNNING
+        fi
     elif [ $rc -eq 1 ]; then
-        ocf_log info "serviced_status - Old PID file found, but Control Center (serviced) is not running"
-        return $OCF_NOT_RUNNING
+        check_serviced_exit_code
+        exit_ret_val=$?
+        if [ $exit_ret_val -ne 0 ]; then
+            return $exit_ret_val;
+        else
+            ocf_log info "serviced_status - Old PID file found, but Control Center (serviced) is not running"
+            return $OCF_NOT_RUNNING
+        fi
     fi
 
     return $OCF_SUCCESS
@@ -199,48 +227,6 @@ serviced_monitor() {
     if [ $rc -ne $OCF_SUCCESS ]; then
         return $rc
     fi
-
-    LIST_CMD="service list --show-fields Name,ServiceID --ascii"
-    LIST_RESULTS=`${OCF_RESKEY_binary} ${LIST_CMD} 2>&1`
-    if [[ ! $LIST_RESULTS =~ ^(no services found|Name[[:space:]]+ServiceID) ]]; then
-        if [[ "$phase" != "startup" ]] || [[ "${OCF_RESKEY_verbose}" == "true" ]]; then
-            ocf_log err "serviced_monitor - Control Center (serviced) failed healthcheck"
-            ocf_log info "serviced_monitor - Result of '${OCF_RESKEY_binary} ${LIST_CMD}' = '${LIST_RESULTS}'"
-        fi
-        return $OCF_ERR_GENERIC
-    fi
-
-    if [ "${LIST_RESULTS}" == "no services found" ]; then
-        verbose_log "serviced_monitor - no leaf services found"
-        return $OCF_SUCCESS
-    fi
-
-    verbose_log "serviced_monitor - LIST_RESULTS='${LIST_RESULTS}'"
-
-    # Find the id of a 'leaf' service; i.e. one with no child services.
-    # With the ASCII output format, the list of services will have a "+" preceding services
-    # that have children (so exclude those).
-    # The particular service choosen doesn't matter, so get the last one in the list.
-    #
-    # This technique is used to avoid hard-coding any particular service name
-    LEAF_SERVICE_ID=`echo "${LIST_RESULTS}" | grep -v \+ 2>&1 | tail -n 1 2>&1 | awk '{print $2}' 2>&1`
-    verbose_log "serviced_monitor - found LEAF_SERVICE_ID='${LEAF_SERVICE_ID}'"
-
-    # Now check the service status which will exercise calls to both the database
-    # and to zookeeper. At this point, we are not interested in the status of the particular
-    # service - instead, we want to exercise enough of the CC internals to demonstrate that
-    # it can respond to basic commands. Note that 'service status' is bit more involved than
-    # 'service list'.
-    STATUS_CMD="service status --show-fields Name,Status ${LEAF_SERVICE_ID}"
-    STATUS_RESULTS=`${OCF_RESKEY_binary} ${STATUS_CMD} 2>&1`
-    if [[ ! $STATUS_RESULTS =~ ^(service not found|Name[[:space:]]+Status) ]]; then
-        if [[ "${phase}" != "startup" ]] || [[ "${OCF_RESKEY_verbose}" == "true" ]]; then
-            ocf_log err "serviced_monitor - Control Center (serviced) failed healthcheck"
-            ocf_log info "serviced_monitor - Result of '${OCF_RESKEY_binary} ${STATUS_CMD}' = '${STATUS_RESULTS}'"
-        fi
-        return $OCF_ERR_GENERIC
-    fi
-    verbose_log "serviced_monitor - found STATUS_RESULTS='${STATUS_RESULTS}'"
 
     return $OCF_SUCCESS
 }
