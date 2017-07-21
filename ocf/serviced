@@ -167,7 +167,7 @@ check_serviced_exit_code() {
         if [[ $main_pid_line =~ $exit_code_regex ]]; then
             exit_code_of_prev_cc_pid="${BASH_REMATCH[1]}"
             if [[ ! $exit_code_of_prev_cc_pid =~ $valid_exit_codes ]]; then
-                ocf_log info "serviced_status - Control Center (serviced) did not exit cleanly with exit code: $exit_code_of_prev_cc_pid" 
+                ocf_log err "serviced_monitor - Control Center (serviced) did not exit cleanly with exit code: $exit_code_of_prev_cc_pid" 
                 return $OCF_ERR_GENERIC;
             fi
         fi
@@ -211,8 +211,10 @@ serviced_monitor() {
         check_serviced_exit_code
         exit_ret_val=$?
         if [ $exit_ret_val -ne 0 ]; then
+            ocf_log error "serviced_monitor - Control Center failed"
             return $OCF_ERR_GENERIC;
         fi
+        ocf_log info "serviced_monitor - Control Center not running"
         return $rc
     fi
 
