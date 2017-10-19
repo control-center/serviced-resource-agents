@@ -50,6 +50,7 @@ all: docker-rpm docker-deb
 docker-rpm:
 	docker build -t zenoss/serviced-resource-agents:rpm-$(PKG_VERSION) ./pkg/rpm
 	docker run --rm --user $(DUID):$(DGID) -v `pwd`:/serviced-resource-agents zenoss/serviced-resource-agents:rpm-$(PKG_VERSION)
+	./sign-rpm.sh
 
 docker-deb:
 	docker build -t zenoss/serviced-resource-agents:deb-$(PKG_VERSION) ./pkg/deb
